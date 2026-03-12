@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "provider": "local",
+  "issues": [
+    {
+      "id": "seed-issue-1",
+      "identifier": "LOCAL-SEED-1",
+      "title": "Seeded local tracker issue",
+      "description": "Used by local tracker smoke tests.",
+      "state": "todo",
+      "labels": ["seed"],
+      "url": "local://issues/LOCAL-SEED-1",
+      "metadata": {
+        "seed": true
+      },
+      "comments": [],
+      "artifacts": [],
+      "createdAt": "2026-03-12T00:00:00.000Z",
+      "updatedAt": "2026-03-12T00:00:00.000Z"
+    }
+  ]
+}

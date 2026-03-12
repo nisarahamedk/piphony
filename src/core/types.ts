@@ -1,0 +1,133 @@
+export const CANONICAL_STATES = [
+  "todo",
+  "in_progress",
+  "agent_review",
+  "human_review",
+  "rework",
+  "merging",
+  "done",
+  "cancelled",
+] as const;
+
+export type CanonicalState = (typeof CANONICAL_STATES)[number];
+
+export interface WorkItem {
+  provider: string;
+  externalId: string;
+  identifier: string;
+  title: string;
+  description?: string;
+  state: CanonicalState;
+  labels: string[];
+  assignee?: string;
+  url?: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface TrackerComment {
+  id: string;
+  body: string;
+  createdAt: string;
+  author: string;
+}
+
+export interface TrackerArtifact {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: string;
+}
+
+export type TrackerMutation =
+  | { type: "transition"; state: CanonicalState }
+  | { type: "comment"; body: string; author?: string }
+  | { type: "artifact"; name: string; path: string };
+
+export interface TrackerAdapter {
+  readonly provider: string;
+  fetchCandidateWorkItems(): Promise<WorkItem[]>;
+  fetchWorkItemById(id: string): Promise<WorkItem | undefined>;
+  fetchWorkItemsByState(states: CanonicalState[]): Promise<WorkItem[]>;
+  normalize(issue: unknown): WorkItem;
+  applyMutation(id: string, mutation: TrackerMutation): Promise<WorkItem>;
+  appendComment(id: string, input: { body: string; author?: string }): Promise<TrackerComment>;
+  attachArtifact(id: string, input: { name: string; path: string }): Promise<TrackerArtifact>;
+}
+
+export interface RuntimeTarget {
+  id: string;
+  service: string;
+  workdir?: string;
+}
+
+export interface RuntimeExecResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+export interface BashSpawnHookInput {
+  command: string;
+  cwd: string;
+  env: Record<string, string | undefined>;
+}
+
+export interface BashSpawnHookOutput {
+  command: string;
+  cwd: string;
+  env: Record<string, string | undefined>;
+}
+
+export interface RuntimeProvider {
+  readonly name: string;
+  prepare(input: { runId: string; workItem: WorkItem }): Promise<void>;
+  start(): Promise<void>;
+  waitUntilReady(): Promise<void>;
+  selectTarget(input?: { preferredService?: string }): Promise<RuntimeTarget>;
+  execOnTarget(target: RuntimeTarget, command: string, options?: { cwd?: string; timeoutMs?: number }): Promise<RuntimeExecResult>;
+  getEndpoints(): Promise<Record<string, string>>;
+  collectArtifacts(destinationDir: string): Promise<string[]>;
+  stop(): Promise<void>;
+  destroy(): Promise<void>;
+  createBashSpawnHook?(): (input: BashSpawnHookInput) => BashSpawnHookOutput;
+}
+
+export interface RunRecord {
+  runId: string;
+  workItemId: string;
+  agentType: string;
+  runtimeProvider?: string;
+  status: "created" | "running" | "completed" | "failed" | "idle";
+  attemptNumber: number;
+  startedAt: string;
+  updatedAt: string;
+}
+
+export interface RunWorkerResult {
+  summary: string;
+  output?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface EventRecord {
+  timestamp: string;
+  event: string;
+  runId?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface WorktreePreparationResult {
+  branchName: string;
+  workspacePath: string;
+  reusedExistingBranch: boolean;
+  reason: string;
+}
+
+export interface ValidationResult {
+  validatorName: string;
+  status: "passed" | "failed";
+  summary: string;
+  details?: Record<string, unknown>;
+  artifacts?: string[];
+}

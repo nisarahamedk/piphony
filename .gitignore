@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.piphony/
+.tmp/
+.tanstack/
+apps/web/.output/
+*.log
+pi-session-*.html
+research.md
+.DS_Store
+reference/
