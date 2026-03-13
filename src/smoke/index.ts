@@ -7,4 +7,8 @@ console.log("- npm run smoke:local-e2e");
 console.log("- npm run smoke:docker");
 console.log("- npm run smoke:restart");
 console.log("- npm run smoke:observability");
+console.log("- npm run smoke:session-control");
+console.log("- npm run smoke:cos");
 console.log("- npm run smoke:web");
+console.log("- npm run smoke:extension");
+console.log("- npm run smoke:stack");

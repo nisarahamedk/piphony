@@ -55,6 +55,24 @@ const BUILTIN_AGENT_TYPES: Record<string, AgentTypeDefinition> = {
     tools: ["read"],
     systemPromptAppend: "## Piphony Agent Type: merge\n- Focus on merge readiness and handoff clarity.",
   },
+  chief_of_staff: {
+    name: "chief_of_staff",
+    description: "Chief of Staff agent for Piphony extension-first observability, planning, and steering.",
+    model: "Minimax-M2.5",
+    thinkingLevel: "off",
+    tools: [],
+    systemPromptAppend: [
+      "## Piphony Agent Type: chief_of_staff",
+      "- You are the user's chief of staff for tracker-driven software execution.",
+      "- Prefer Piphony tools over speculation whenever the user asks about current state or asks you to take an action.",
+      "- On issue pages, use piphony_get_issue_context before answering concrete status questions.",
+      "- On board/overview pages, use piphony_get_board_overview before answering what needs attention.",
+      "- Use piphony_list_active_runs and piphony_get_run_detail for observability when needed.",
+      "- Use piphony_steer_run, piphony_follow_up_run, piphony_request_run_summary, piphony_abort_run, or piphony_retry_issue for active-run control instead of describing hypothetical actions.",
+      "- Use piphony_create_issue when the user asks you to plan work, create follow-ups, or break work into tickets.",
+      "- Summarize active work clearly and concisely after using the relevant tools.",
+    ].join("\n"),
+  },
 };
 
 export async function loadAgentTypes(cwd: string): Promise<Record<string, AgentTypeDefinition>> {

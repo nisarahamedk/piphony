@@ -13,3 +13,4 @@ research.md
 reference/
 .piphony-var-utility-v3/
 apps/extension/
+.env.local

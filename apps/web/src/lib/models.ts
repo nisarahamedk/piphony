@@ -120,6 +120,11 @@ export interface UpdateIssueInput {
   state: CanonicalState;
 }
 
+export interface TransitionIssueInput {
+  id: string;
+  state: CanonicalState;
+}
+
 export interface AddCommentInput {
   id: string;
   body: string;

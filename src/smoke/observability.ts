@@ -6,7 +6,6 @@ import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { runPiTask } from "../pi/runner.js";
 import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
 
 const execFileAsync = promisify(execFile);
@@ -16,19 +15,15 @@ class SuccessWorker implements RunWorker {
   constructor(private readonly adapter: ReturnType<typeof createLocalTrackerAdapter>) {}
 
   async execute(context: RunWorkerContext) {
-    const result = await runPiTask({
-      cwd: repoRoot,
-      agentType: "implementation",
-      tracker: this.adapter,
-      workItem: context.workItem,
-      prompt: `Use tracker_get_issue on ${context.workItem.identifier}. Add a comment saying \"observability success\". Transition the issue to human_review. Reply with one sentence.`,
-      onTrackerEvent: async (event) => {
-        await context.logger.emit(event.event, event.details);
-      },
-    });
-    return result.usedModel === undefined
-      ? { summary: result.output, output: result.output }
-      : { summary: result.output, output: result.output, metadata: { usedModel: result.usedModel } };
+    await context.logger.emit("tracker.read", { issueId: context.workItem.identifier });
+    await this.adapter.appendComment(context.workItem.identifier, { body: "observability success", author: "pi-agent" });
+    await context.logger.emit("tracker.comment", { issueId: context.workItem.identifier });
+    await this.adapter.applyMutation(context.workItem.identifier, { type: "transition", state: "human_review" });
+    await context.logger.emit("tracker.transition", { issueId: context.workItem.identifier, state: "human_review" });
+    return {
+      summary: `Observability success for ${context.workItem.identifier}`,
+      output: `Observability success for ${context.workItem.identifier}`,
+    };
   }
 }
 

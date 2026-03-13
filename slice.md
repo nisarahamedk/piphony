@@ -1,6 +1,6 @@
 # Piphony Build Slices
 
-Status: slices 0-7 and 9 implemented + smoke-tested; slice 8 intentionally deferred
+Status: slices 0-7 and 9-20 implemented + smoke-tested; slice 8 intentionally deferred; slice 21 implemented and validated via tests + targeted CoS/browser smokes
 
 Implementation note:
 - Codebase was later refactored from `packages/*` into a single-app `src/` structure.
@@ -21,8 +21,10 @@ Source docs:
 
 Shipped now:
 - built-in TanStack Start local tracker + observability UI in `apps/web`
-- local pull-based orchestrator loop via `npm run orchestrator:watch`
-- browser-driven E2E smoke using `agent-browser`
+- local shared-stack startup via `npm run dev:stack` (web + orchestrator + CoS server)
+- local pull-based orchestrator loop still available via `npm run orchestrator:watch`
+- browser-driven E2E smoke now uses Playwright for strict browser validation
+- Chief of Staff now ships as a true browser extension surface (MV3 side panel / extension page runtime), not an in-app embedded panel
 - UI now behaves like a tracker client:
   - create issues
   - edit issues
@@ -31,14 +33,19 @@ Shipped now:
 - orchestrator is again pull-based; UI does not directly start runs
 - agent is responsible for in-run tracker writes through tracker tools
 
-Important: this is directionally aligned with Symphony again, but not yet parity-complete.
-The next work is specifically about hardening the local tracker/orchestrator model so it can support:
-- Symphony-style claim / lease / reconcile semantics
-- worker swarms
-- stronger state-model alignment
-- UI-visible worker health
+Important: the local tracker/orchestrator/UI hardening slices are now shipped for the current built-in web surface.
 
-## Next testable slices — Symphony-aligned local tracker hardening
+The next work is a deliberate product pivot:
+- keep the existing pull-based orchestrator
+- keep `RunWorker` for v1
+- keep tracker providers as issue authority
+- keep runtime providers as execution authority
+- add a sessionful Pi control layer for active runs
+- add a true browser extension as the primary end-user UX
+- remove the temporary in-web CoS embedding so extension UX lives only in the browser extension runtime
+- add a Rivet-backed `ChiefOfStaffActor` as the only browser-facing realtime actor in v1
+
+## Completed local hardening slices
 
 ### Slice 10 — SQLite-backed local tracker authority
 
@@ -211,6 +218,256 @@ The next work is specifically about hardening the local tracker/orchestrator mod
 - [x] browser-driven workflow smoke passes
 - [x] screenshots/artifacts captured
 
+---
+
+## Locked v1 assumptions — extension-first Chief of Staff
+
+- single-user OSS deployment
+- orchestrator remains pull-based and is still the only thing that launches work
+- extension / built-in UI do not directly launch runs
+- `RunWorker` remains the active-run execution abstraction in v1
+- active Pi sessions are disposable; exact resume is not required
+- tracker providers remain issue authority
+- runtime providers remain execution authority
+- Rivet is introduced only for `ChiefOfStaffActor`
+- one `ChiefOfStaffActor` per user
+- extension should support both issue-page and board/overview contexts
+- tracker page detection should be generic in shape, even if the first implementation only deeply supports one provider at a time
+- the CoS agent may plan work and create tickets, in addition to observing and steering active runs
+
+## Next testable slices — extension-first Chief-of-Staff v1
+
+### Slice 15 — Sessionful Pi control for active `RunWorker` sessions
+
+**Goal:** Keep `RunWorker` but replace the fire-and-forget Pi wrapper with a live controllable Pi session layer.
+
+### Includes
+- new sessionful Pi controller abstraction for active runs
+- support for:
+  - `start`
+  - `steer`
+  - `followUp`
+  - `snapshot`
+  - `abort`
+- `RunWorker` integration that keeps the current orchestrator model intact
+- active session lifecycle cleanup on completion/failure
+
+### Spec / design anchors
+- `doc/handoff.md`
+- `doc/symphony_rebuild_v2_spec.md` §4.4, §13, §14, §15
+- local pi docs/examples
+
+### Test / smoke exit criteria
+- create one runnable issue and dispatch a real Pi-backed worker
+- while the run is active, fetch a session snapshot
+- send a steer/follow-up message into the active Pi session
+- abort an active run cleanly
+- completed/failed runs release their active session handles
+
+### Status checklist
+- [x] sessionful Pi controller abstraction added
+- [x] `RunWorker` path migrated to use live session control
+- [x] steer/followUp/abort plumbing added
+- [x] real Pi smoke passes with `Minimax-M2.5` and `thinking: off`
+
+---
+
+### Slice 16 — Active run registry + session artifact index
+
+**Goal:** Make active runs discoverable and probeable by the control plane, CoS agent, and extension surfaces.
+
+### Includes
+- active run registry keyed by `runId`
+- mapping from issue/work item -> active run
+- current phase / heartbeat / worker metadata
+- latest session artifact pointers:
+  - transcript
+  - summary
+  - events/jsonl
+- registry hooks for live steering into active sessions
+
+### Spec / design anchors
+- `doc/handoff.md`
+- `src/core/orchestrator.ts`
+- `src/observability/logger.ts`
+
+### Test / smoke exit criteria
+- dispatch two active issues with local concurrency > 1
+- registry lists both runs while active
+- registry exposes issue linkage + latest artifact paths
+- finished runs disappear from the active registry but keep artifact history inspectable
+- steering can locate the correct active run by issue context
+
+### Status checklist
+- [x] active run registry added
+- [x] issue/run lookup surface added
+- [x] session artifact indexing added
+- [x] multi-run smoke passes
+
+---
+
+### Slice 17 — Piphony Chief-of-Staff tool surface
+
+**Goal:** Expose the minimal backend tool surface a Pi-based Chief of Staff needs.
+
+### Includes
+- CoS-facing tools/APIs for:
+  - issue context lookup
+  - active run listing
+  - run detail / artifact lookup
+  - steer/followUp/abort active run
+  - create issue / create child tickets
+- clear separation between:
+  - observability reads
+  - live session control
+  - tracker mutations
+
+### Spec / design anchors
+- `doc/handoff.md`
+- `doc/symphony_rebuild_v2_spec.md` §14, §15
+- current `src/pi/tracker-tools.ts`
+
+### Test / smoke exit criteria
+- CoS tool surface can list active runs
+- CoS tool surface can resolve issue -> active run context
+- CoS tool surface can steer one active run
+- CoS tool surface can create a new ticket in the current tracker backend
+
+### Status checklist
+- [x] CoS tool surface designed
+- [x] observability/read tools added
+- [x] run-control tools added
+- [x] issue creation/planning tools added
+- [x] smoke passes end-to-end
+
+---
+
+### Slice 18 — Rivet `ChiefOfStaffActor` with Pi CoS profile
+
+**Goal:** Introduce Rivet only for the browser-facing Chief of Staff session, with a Pi agent using a Piphony CoS profile as its brain.
+
+### Includes
+- one CoS actor per user
+- websocket/realtime connection surface for extension and local testing
+- Pi session inside the actor using a dedicated Piphony CoS profile
+- CoS actor tools wired to the Piphony CoS tool surface
+- session context handling for:
+  - current issue page
+  - current board/overview page
+  - recent conversation state
+
+### Spec / design anchors
+- `reference/rivet/**`
+- `reference/skills/**`
+- `doc/handoff.md`
+
+### Test / smoke exit criteria
+- connect a local client to `ChiefOfStaffActor`
+- ask for status on a current issue and receive a useful answer
+- ask “what needs my attention?” and receive an overview answer
+- steer an active worker Pi session through the CoS actor
+- create a ticket through the CoS agent from planning context
+
+### Status checklist
+- [x] CoS Rivet actor added
+- [x] Pi CoS profile added
+- [x] CoS actor <-> Piphony tool surface wired
+- [x] local realtime smoke passes
+
+---
+
+### Slice 19 — Extension context abstraction for issue + board pages
+
+**Goal:** Build the extension around a generic tracker page-context abstraction instead of a one-off hardcoded page.
+
+### Includes
+- content-script page detection abstraction
+- normalized context extraction for:
+  - issue pages
+  - board/overview pages
+- connection from page context -> CoS actor session
+- true MV3 extension runtime:
+  - background/service worker
+  - content script
+  - side panel / extension page UI
+- extension UI shell for:
+  - current issue summary / steering
+  - current board overview / planning
+- no in-web CoS embedding in the native app
+
+### Spec / design anchors
+- `apps/extension/**`
+- `doc/handoff.md`
+
+### Test / smoke exit criteria
+- start the shared local stack and open the native Piphony web UI with no special query params
+- load the true browser extension surface against that page
+- on an issue page fixture or supported tracker page, extension resolves issue context and shows CoS summary
+- on a board/overview fixture or supported tracker page, extension resolves board context and shows CoS overview
+- steering from issue view reaches the active worker session
+- CoS board planning can create at least one new ticket visible in the tracker backend
+
+### Status checklist
+- [x] page-context abstraction added
+- [x] issue surface added
+- [x] board/overview surface added
+- [x] extension smoke passes on both surfaces
+
+---
+
+### Slice 20 — Planning workflow through CoS
+
+**Goal:** Let the CoS agent decompose work and create tracker tickets from issue/board context.
+
+### Includes
+- prompt/profile guidance for planning behavior
+- ticket creation through tracker tools/services
+- optional child-ticket / follow-up-ticket creation
+- board-context planning path and issue-context planning path
+
+### Spec / design anchors
+- `doc/handoff.md`
+- tracker provider abstractions in `src/core/types.ts`
+
+### Test / smoke exit criteria
+- ask CoS to break an initiative into tickets from board context
+- CoS proposes a plan and creates tickets
+- newly created tickets are visible in tracker state and extension context
+
+### Status checklist
+- [x] planning prompts/profile behavior added
+- [x] ticket-creation flow wired
+- [x] planning smoke passes
+
+---
+
+### Slice 21 — Single-user v1 hardening for active run probing + steering
+
+**Goal:** Make the extension-first single-user swarm operationally reliable enough for v1 without introducing full distributed claim/lease complexity.
+
+### Includes
+- stale active-run detection
+- safe active session cleanup on crash/failure paths
+- cancel/retry controls through CoS tool surface
+- clearer run ownership and phase visibility for the active registry
+- smoke coverage for multiple runnable tickets with CoS visibility
+
+### Spec / design anchors
+- `doc/handoff.md`
+- current local orchestrator model in `src/core/orchestrator.ts`
+
+### Test / smoke exit criteria
+- multiple runnable issues can be processed up to configured concurrency
+- CoS can see multiple active runs from board/overview context
+- a stalled run is surfaced as needing attention
+- operator can abort/retry through CoS and see recovery
+
+### Status checklist
+- [x] stale-run detection added
+- [x] active-session cleanup hardened
+- [x] CoS abort/retry flow added
+- [x] multi-run hardening coverage passes
+
 ## Planning principles
 
 1. Setup first
@@ -231,6 +488,11 @@ For smoke testing and cheap iterative validation, use the pi agent with:
 - `thinking: off`
 
 Apply this by default to local smoke runs and routine end-to-end validation unless a slice explicitly requires a stronger model for debugging or quality comparison.
+
+Testing guidance:
+- prefer deterministic fake/gated controllers in unit tests where possible
+- use real Pi sessions with the cheap smoke model above where needed to cover the full surface end-to-end
+- each new slice should begin with repo/reference research using researcher subagents before implementation
 
 ---
 

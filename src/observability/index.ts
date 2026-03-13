@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { EventRecord, RunRecord } from "../core/types.js";
+export * from "./artifact-index.js";
 
 export interface RunInspection {
   runId: string;

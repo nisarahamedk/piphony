@@ -4,6 +4,7 @@ import { TanStackDevtools } from "@tanstack/react-devtools";
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
+  notFoundComponent: () => <p>Not Found</p>,
   head: () => ({
     meta: [
       { charSet: "utf-8" },

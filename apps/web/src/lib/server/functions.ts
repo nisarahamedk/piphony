@@ -11,7 +11,7 @@ import {
   readRunDetail,
   readRunsIndex,
 } from "./piphony-data";
-import type { AddCommentInput, CreateIssueInput, UpdateIssueInput } from "../models";
+import type { AddCommentInput, CreateIssueInput, TransitionIssueInput, UpdateIssueInput } from "../models";
 
 export const getDashboardSnapshot = createServerFn({ method: "GET" }).handler(async () => readDashboardSnapshot());
 
@@ -141,6 +141,25 @@ export const appendIssueComment = createServerFn({ method: "POST" })
       });
       issue.metadata.lastCommentedFrom = "piphony_web";
       issue.metadata.lastCommentedAt = nowIso();
+    });
+    return readDashboardSnapshot();
+  });
+
+export const transitionIssue = createServerFn({ method: "POST" })
+  .inputValidator((input: TransitionIssueInput) => input)
+  .handler(async ({ data }) => {
+    const input = (data ?? {}) as TransitionIssueInput;
+    const id = input.id?.trim();
+    if (id === undefined || id === "") {
+      throw new Error("Issue id is required");
+    }
+
+    const state = normalizeState(input.state);
+    const store = getTrackerStore();
+    await store.updateIssue(id, (issue) => {
+      issue.state = state;
+      issue.metadata.updatedFrom = "piphony_web";
+      issue.metadata.updatedViaUiAt = nowIso();
     });
     return readDashboardSnapshot();
   });

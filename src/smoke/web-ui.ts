@@ -1,26 +1,61 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
+import { chromium, type Page } from "playwright";
+import { Orchestrator, type RunWorker, type RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir, resetDir } from "../core/utils.js";
+import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
 
 const execFileAsync = promisify(execFile);
 const webUrl = "http://127.0.0.1:3333";
 const artifactsDir = join(repoRoot, ".piphony", "artifacts", "web-ui-smoke");
+const createdIdentifier = "LOCAL-450";
+const createdTitle = "Pull-based workflow smoke";
+const boardShot = join(artifactsDir, "board.png");
+const runsShot = join(artifactsDir, "runs.png");
+
+class WebUiSmokeWorker implements RunWorker {
+  readonly name = "implementation";
+
+  constructor(private readonly tracker: ReturnType<typeof createLocalTrackerAdapter>) {}
+
+  async execute(context: RunWorkerContext) {
+    await this.tracker.applyMutation(context.workItem.identifier, {
+      type: "comment",
+      author: "agent",
+      body: "Plan\n\n- Picked up by the deterministic web smoke worker.",
+    });
+    await sleep(300);
+
+    await this.tracker.applyMutation(context.workItem.identifier, {
+      type: "comment",
+      author: "agent",
+      body: "Progress\n\n- Implemented the smoke-path work item.",
+    });
+    await sleep(300);
+
+    await this.tracker.applyMutation(context.workItem.identifier, {
+      type: "comment",
+      author: "agent",
+      body: "Review handoff\n\n- Ready for human review.",
+    });
+    await this.tracker.applyMutation(context.workItem.identifier, {
+      type: "transition",
+      state: "human_review",
+    });
+
+    return {
+      summary: `Issue ${context.workItem.identifier} has been processed`,
+      output: `Handled ${context.workItem.identifier}`,
+    };
+  }
+}
 
 function stripAnsi(value: string): string {
   return value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\u001b\(B/g, "");
-}
-
-function normalizeBrowserValue(raw: string): string {
-  const trimmed = stripAnsi(raw).trim();
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return typeof parsed === "string" ? parsed : trimmed;
-  } catch {
-    return trimmed;
-  }
 }
 
 async function runShell(command: string, options?: { cwd?: string; timeoutMs?: number }): Promise<string> {
@@ -42,9 +77,44 @@ async function waitForHttp(url: string, attempts = 180): Promise<void> {
     } catch {
       // retry
     }
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await sleep(1_000);
   }
   throw new Error(`service_not_ready:${url}`);
+}
+
+async function waitForLocatorText(input: {
+  page: Page;
+  testId: string;
+  includes: string[];
+  timeoutMs?: number;
+}): Promise<string> {
+  const timeoutMs = input.timeoutMs ?? 180_000;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const text = (await input.page.getByTestId(input.testId).textContent().catch(() => null)) ?? "";
+    if (input.includes.every((needle) => text.includes(needle))) {
+      return text;
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for locator text: ${input.testId}`);
+}
+
+async function waitForBodyText(input: {
+  page: Page;
+  includes: string[];
+  timeoutMs?: number;
+}): Promise<string> {
+  const timeoutMs = input.timeoutMs ?? 180_000;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const text = (await input.page.locator("body").textContent().catch(() => null)) ?? "";
+    if (input.includes.every((needle) => text.includes(needle))) {
+      return text;
+    }
+    await sleep(1_500);
+  }
+  throw new Error(`Timed out waiting for body text: ${input.includes.join(", ")}`);
 }
 
 async function seedUiState(): Promise<void> {
@@ -70,162 +140,104 @@ function startWebServer() {
   });
 }
 
-function startOrchestratorWatch() {
-  return spawn("npm", ["run", "orchestrator:watch"], {
-    cwd: repoRoot,
-    env: { ...process.env, PIPHONY_POLL_INTERVAL_MS: "2000" },
-    stdio: "inherit",
-  });
-}
-
-async function runAgentBrowser(session: string, args: string[], timeoutMs = 120_000): Promise<string> {
-  const { stdout, stderr } = await execFileAsync("agent-browser", ["--session", session, ...args], {
-    cwd: repoRoot,
-    timeout: timeoutMs,
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  return stripAnsi([stdout.toString(), stderr.toString()].filter(Boolean).join("\n").trim());
-}
-
-async function browserEval(session: string, expression: string, timeoutMs = 120_000): Promise<string> {
-  return runAgentBrowser(session, ["eval", expression], timeoutMs);
-}
-
-async function waitForBrowserCondition(input: {
-  session: string;
-  expression: string;
-  expected: string;
-  timeoutMs?: number;
-  intervalMs?: number;
-}): Promise<string> {
-  const timeoutMs = input.timeoutMs ?? 180_000;
-  const intervalMs = input.intervalMs ?? 2_500;
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const value = normalizeBrowserValue(await browserEval(input.session, input.expression));
-    if (value === input.expected) {
-      return value;
-    }
-    await runAgentBrowser(input.session, ["wait", String(intervalMs)]);
-  }
-
-  throw new Error(`Timed out waiting for browser condition: ${input.expression}`);
-}
-
 await seedUiState();
 await killExistingWebServer();
 await killExistingOrchestrator();
 
-const session = `piphony-web-smoke-${Date.now()}`;
-const createdIdentifier = "LOCAL-450";
-const createdTitle = "Pull-based workflow smoke";
-const boardShot = join(artifactsDir, "board.png");
-const runsShot = join(artifactsDir, "runs.png");
-const orchestrator = startOrchestratorWatch();
+const adapter = createLocalTrackerAdapter(trackerDir);
+const orchestrator = new Orchestrator({
+  tracker: adapter,
+  worker: new WebUiSmokeWorker(adapter),
+  runsRootDir,
+  pollIntervalMs: 500,
+  instanceId: "web-ui-smoke",
+});
+
+let stopPolling = false;
+const pollLoop = (async () => {
+  while (!stopPolling) {
+    await orchestrator.pollOnce().catch((error) => {
+      console.error("web_ui_smoke_orchestrator_error", error instanceof Error ? error.message : String(error));
+    });
+    await sleep(1_000);
+  }
+})();
+
 const server = startWebServer();
 
 try {
   await waitForHttp(webUrl);
-  await runAgentBrowser(session, ["open", webUrl]);
-  await runAgentBrowser(session, ["wait", "4500"]);
 
-  await browserEval(session, `document.querySelector("[data-testid='toggle-create-issue']")?.click(); 'opened'`);
-  await runAgentBrowser(session, ["wait", "600"]);
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  const page = await browser.newPage();
+  try {
+    await page.goto(webUrl, { waitUntil: "networkidle", timeout: 120_000 });
 
-  const formSet = await browserEval(
-    session,
-    `const setValue=(selector,value)=>{const el=document.querySelector(selector); if(!el) return false; const prototype=el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const descriptor=Object.getOwnPropertyDescriptor(prototype,'value'); descriptor?.set?.call(el,value); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true;}; JSON.stringify({identifier:setValue("[data-testid='create-issue-identifier']",'${createdIdentifier}'), title:setValue("[data-testid='create-issue-title']",'${createdTitle}'), description:setValue("[data-testid='create-issue-description']",'Created from the browser smoke to prove the Symphony-style workflow: create issue, transition it into Todo, let the orchestrator claim it, observe tracker comments, and finish in Human Review.')})`,
-  );
-  if (!normalizeBrowserValue(formSet).includes("true")) {
-    throw new Error(`Expected create issue form fields to update, got: ${formSet}`);
+    await page.getByTestId("toggle-create-issue").click();
+    await page.getByTestId("create-issue-identifier").fill(createdIdentifier);
+    await page.getByTestId("create-issue-title").fill(createdTitle);
+    await page.getByTestId("create-issue-description").fill("Created from the browser smoke to prove the Symphony-style workflow: create issue, transition to Todo, let the orchestrator claim it, observe tracker comments, and finish in Human Review.");
+    await page.getByTestId("submit-create-issue").click();
+
+    await waitForLocatorText({
+      page,
+      testId: "board-column-backlog",
+      includes: [createdIdentifier],
+      timeoutMs: 30_000,
+    });
+
+    await page.getByTestId(`issue-card-${createdIdentifier}`).click();
+    await page.waitForSelector("[data-testid='issue-inspector']", { timeout: 30_000 });
+    await waitForLocatorText({
+      page,
+      testId: "issue-inspector",
+      includes: [createdIdentifier],
+      timeoutMs: 30_000,
+    });
+
+    await page.getByTestId("transition-to-todo").click();
+    await waitForLocatorText({
+      page,
+      testId: "board-column-todo",
+      includes: [createdIdentifier],
+      timeoutMs: 30_000,
+    });
+
+    await page.screenshot({ path: boardShot, fullPage: true });
+
+    await waitForBodyText({
+      page,
+      includes: ["Plan", "Progress", "Review handoff"],
+      timeoutMs: 60_000,
+    });
+
+    await waitForLocatorText({
+      page,
+      testId: "board-column-human_review",
+      includes: [createdIdentifier],
+      timeoutMs: 60_000,
+    });
+
+    await page.locator("[data-testid='issue-inspector'] button").first().click();
+    await page.waitForSelector("[data-testid='worker-status-panel']", { timeout: 30_000 });
+
+    await page.getByRole("link", { name: /runs/i }).click();
+    await waitForBodyText({
+      page,
+      includes: [createdIdentifier, `Issue ${createdIdentifier} has been processed`],
+      timeoutMs: 60_000,
+    });
+
+    await page.screenshot({ path: runsShot, fullPage: true });
+
+    const runCard = await page.locator('[data-testid^="run-card-"]').first().getAttribute("data-testid");
+
+    console.log(JSON.stringify({ ok: true, url: webUrl, issue: createdIdentifier, runCard, screenshots: [boardShot, runsShot] }, null, 2));
+  } finally {
+    await browser.close();
   }
-
-  await browserEval(session, `document.querySelector("[data-testid='submit-create-issue']")?.click(); 'submitted'`);
-
-  await waitForBrowserCondition({
-    session,
-    expression: `document.body.textContent?.includes('${createdIdentifier}') ? 'yes' : 'no'`,
-    expected: "yes",
-    timeoutMs: 30_000,
-    intervalMs: 1_500,
-  });
-
-  await browserEval(session, `document.querySelector("[data-testid='issue-card-${createdIdentifier}']")?.click(); 'clicked'`);
-  await runAgentBrowser(session, ["wait", "1200"]);
-
-  const inspectorState = normalizeBrowserValue(
-    await browserEval(session, `document.querySelector("[data-testid='issue-inspector']")?.textContent || ''`),
-  );
-  if (!inspectorState.includes(createdIdentifier) || !inspectorState.includes("Tracker workflow")) {
-    throw new Error(`Expected issue inspector to show tracker workflow guidance, got: ${inspectorState}`);
-  }
-  if (!inspectorState.includes("Backlog")) {
-    throw new Error(`Expected newly created issue to start in backlog, got: ${inspectorState}`);
-  }
-
-  await browserEval(
-    session,
-    `const select=document.querySelector("[data-testid='issue-state-select']"); if (!select) throw new Error('missing state select'); select.value='todo'; select.dispatchEvent(new Event('input',{bubbles:true})); select.dispatchEvent(new Event('change',{bubbles:true})); 'todo'`,
-  );
-  await browserEval(session, `document.querySelector("[data-testid='save-issue']")?.click(); 'saved'`);
-  await runAgentBrowser(session, ["wait", "1500"]);
-  await runAgentBrowser(session, ["screenshot", boardShot]);
-
-  await waitForBrowserCondition({
-    session,
-    expression: `document.querySelector("[data-testid='worker-status-panel']")?.textContent?.includes('orchestrator') ? 'yes' : 'no'`,
-    expected: "yes",
-    timeoutMs: 30_000,
-    intervalMs: 2_000,
-  });
-
-  await waitForBrowserCondition({
-    session,
-    expression: `document.body.textContent?.includes('Plan') && document.body.textContent?.includes('Progress') && document.body.textContent?.includes('Review handoff') ? 'yes' : 'no'`,
-    expected: "yes",
-    timeoutMs: 180_000,
-    intervalMs: 4_000,
-  });
-
-  await waitForBrowserCondition({
-    session,
-    expression: `Array.from(document.querySelectorAll('select')).some((el)=>el.value === 'human_review') ? 'yes' : 'no'`,
-    expected: "yes",
-    timeoutMs: 180_000,
-    intervalMs: 4_000,
-  });
-
-  await browserEval(session, `Array.from(document.querySelectorAll('a')).find((el)=>el.textContent?.includes('Runs'))?.click(); 'runs'`);
-
-  await waitForBrowserCondition({
-    session,
-    expression: `document.body.textContent?.includes('${createdIdentifier}') ? 'yes' : 'no'`,
-    expected: "yes",
-    timeoutMs: 60_000,
-    intervalMs: 2_000,
-  });
-
-  await waitForBrowserCondition({
-    session,
-    expression: `document.body.textContent?.includes('Issue ${createdIdentifier} has been processed') ? 'yes' : 'no'`,
-    expected: "yes",
-    timeoutMs: 180_000,
-    intervalMs: 4_000,
-  });
-
-  await runAgentBrowser(session, ["screenshot", runsShot]);
-
-  const runCard = normalizeBrowserValue(
-    await browserEval(
-      session,
-      `Array.from(document.querySelectorAll('[data-testid^="run-card-"]')).map((el)=>el.getAttribute('data-testid') || '').find(Boolean) || ''`,
-    ),
-  );
-
-  console.log(JSON.stringify({ ok: true, url: webUrl, issue: createdIdentifier, runCard, screenshots: [boardShot, runsShot] }, null, 2));
 } finally {
-  await runAgentBrowser(session, ["close"]).catch(() => undefined);
+  stopPolling = true;
+  await pollLoop;
   server.kill("SIGTERM");
-  orchestrator.kill("SIGTERM");
 }

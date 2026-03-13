@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { hostname } from "node:os";
-import { RunLogger } from "../observability/logger.js";
+import { createRunArtifactIndex } from "../observability/artifact-index.js";
+import { RunLogger, type RunArtifacts } from "../observability/logger.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import type { WorkflowDefinition } from "../workflow/types.js";
 import {
@@ -14,15 +15,18 @@ import {
   type WorkItem,
   type WorkerHeartbeat,
 } from "./types.js";
+import type { ActiveRunRegistry } from "./active-run-registry.js";
 import { createRunId, nowIso, withOptional } from "./utils.js";
 
 export interface RunWorkerContext {
   workItem: WorkItem;
   run: RunRecord;
   logger: RunLogger;
+  runArtifacts: RunArtifacts;
   runtimeProvider?: RuntimeProvider;
   workspacePath?: string;
   heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
+  activeRunRegistry?: ActiveRunRegistry;
 }
 
 export interface RunWorker {
@@ -44,6 +48,7 @@ export interface OrchestratorOptions {
   maxConcurrentWorkers?: number;
   instanceId?: string;
   statusSink?: OrchestratorStatusSink;
+  activeRunRegistry?: ActiveRunRegistry;
 }
 
 export interface RunOnceResult {
@@ -158,8 +163,18 @@ export class Orchestrator {
     const run = this.createRunRecord(workItem);
     const logger = new RunLogger(this.options.runsRootDir, run.runId, true);
     await logger.init(run);
-    const result = await this.executeWorkItem({ workItem, run, logger });
-    return { run, result, workItem, logger };
+    this.options.activeRunRegistry?.register({
+      run,
+      workItem,
+      workerName: this.options.worker.name,
+      artifacts: createRunArtifactIndex(logger),
+    });
+    try {
+      const result = await this.executeWorkItem({ workItem, run, logger });
+      return { run, result, workItem, logger };
+    } finally {
+      this.options.activeRunRegistry?.remove(run.runId);
+    }
   }
 
   private async dispatch(workItem: WorkItem): Promise<void> {
@@ -197,6 +212,12 @@ export class Orchestrator {
 
     this.claimed.add(workItem.externalId);
     this.running.set(workItem.externalId, entry);
+    this.options.activeRunRegistry?.register({
+      run,
+      workItem,
+      workerName: this.options.worker.name,
+      artifacts: createRunArtifactIndex(logger),
+    });
     await this.options.statusSink?.upsertWorker(workerHeartbeat);
     await this.flushSnapshot();
 
@@ -215,12 +236,17 @@ export class Orchestrator {
             lastSeenAt: nowIso(),
             details: details === undefined ? entry.workerHeartbeat.details : { ...entry.workerHeartbeat.details, ...details },
           };
+          this.options.activeRunRegistry?.updateHeartbeat(entry.run.runId, entry.workerHeartbeat);
+          if (typeof details?.phase === "string") {
+            this.options.activeRunRegistry?.updatePhase(entry.run.runId, details.phase);
+          }
           await this.options.statusSink?.upsertWorker(entry.workerHeartbeat);
           await this.flushSnapshot();
         },
       });
     } catch (error) {
       entry.error = error;
+      this.options.activeRunRegistry?.updateError(entry.run.runId, error instanceof Error ? error.message : String(error));
     } finally {
       entry.settled = true;
       entry.workerHeartbeat = {
@@ -237,6 +263,7 @@ export class Orchestrator {
     for (const entry of settledEntries) {
       this.running.delete(entry.workItem.externalId);
       this.claimed.delete(entry.workItem.externalId);
+      this.options.activeRunRegistry?.remove(entry.run.runId);
       await this.options.statusSink?.deleteWorker(entry.workerHeartbeat.workerId);
     }
   }
@@ -323,6 +350,7 @@ export class Orchestrator {
 
     run.status = "running";
     run.updatedAt = nowIso();
+    this.options.activeRunRegistry?.updateStatus(run.runId, run.status);
     await logger.writeStatus(run);
     await logger.emit("agent.turn.started", { worker: this.options.worker.name });
     await heartbeat?.({ phase: "running" });
@@ -331,15 +359,23 @@ export class Orchestrator {
     let thrownError: unknown;
 
     try {
+      const contextBase = {
+        workItem,
+        run,
+        logger,
+        runArtifacts: logger.artifacts,
+        ...(heartbeat === undefined ? {} : { heartbeat }),
+        ...(this.options.activeRunRegistry === undefined ? {} : { activeRunRegistry: this.options.activeRunRegistry }),
+      };
       const context = this.options.runtimeProvider === undefined
-        ? (heartbeat === undefined ? { workItem, run, logger } : { workItem, run, logger, heartbeat })
-        : (heartbeat === undefined
-            ? { workItem, run, logger, runtimeProvider: this.options.runtimeProvider }
-            : { workItem, run, logger, runtimeProvider: this.options.runtimeProvider, heartbeat });
+        ? contextBase
+        : { ...contextBase, runtimeProvider: this.options.runtimeProvider };
       result = await this.options.worker.execute(context);
       await workflowExecutor?.runPhase("validate");
       run.status = "completed";
       run.updatedAt = nowIso();
+      this.options.activeRunRegistry?.updateStatus(run.runId, run.status);
+      this.options.activeRunRegistry?.updateSummary(run.runId, result.summary);
       await logger.writeStatus(run);
       if (result.output !== undefined) {
         await logger.writeTranscript(result.output);
@@ -358,6 +394,8 @@ export class Orchestrator {
       thrownError = error;
       run.status = "failed";
       run.updatedAt = nowIso();
+      this.options.activeRunRegistry?.updateStatus(run.runId, run.status);
+      this.options.activeRunRegistry?.updateError(run.runId, error instanceof Error ? error.message : String(error));
       await logger.writeStatus(run);
       await logger.emit("run.failed", {
         message: error instanceof Error ? error.message : String(error),

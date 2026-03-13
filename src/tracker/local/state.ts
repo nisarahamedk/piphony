@@ -247,16 +247,39 @@ export class LocalTrackerStore {
   }
 
   private withDatabase<T>(operation: (db: DatabaseSync) => T): T {
-    const db = new DatabaseSync(this.dbFile);
-    try {
-      db.exec("PRAGMA foreign_keys = ON");
-      db.exec("PRAGMA journal_mode = WAL");
-      db.exec("PRAGMA busy_timeout = 5000");
-      return operation(db);
-    } finally {
-      db.close();
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const db = new DatabaseSync(this.dbFile);
+      try {
+        db.exec("PRAGMA busy_timeout = 5000");
+        db.exec("PRAGMA foreign_keys = ON");
+        db.exec("PRAGMA journal_mode = WAL");
+        return operation(db);
+      } catch (error) {
+        lastError = error;
+        if (!isSqliteLockedError(error) || attempt === 5) {
+          throw error;
+        }
+        sleepSync(100 * (attempt + 1));
+      } finally {
+        db.close();
+      }
     }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
+}
+
+function isSqliteLockedError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const anyError = error as Error & { code?: string; errcode?: number; errstr?: string };
+  return anyError.code === "ERR_SQLITE_ERROR"
+    && (anyError.errcode === 5 || anyError.errcode === 261 || (anyError.errstr ?? "").includes("locked") || error.message.includes("locked"));
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 export function emptyLocalTrackerState(): LocalTrackerState {

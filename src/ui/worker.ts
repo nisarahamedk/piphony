@@ -1,4 +1,6 @@
-import { runPiTask } from "../pi/runner.js";
+import { basename } from "node:path";
+import type { ProviderCapacityService } from "../pi/provider-middleware.js";
+import { createPiSessionController } from "../pi/runner.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 
@@ -8,6 +10,7 @@ export class LocalTrackerImplementationWorker implements RunWorker {
   constructor(
     private readonly repoRoot: string,
     private readonly trackerDir: string,
+    private readonly providerCapacityService?: ProviderCapacityService,
   ) {}
 
   async execute(context: RunWorkerContext) {
@@ -36,22 +39,76 @@ export class LocalTrackerImplementationWorker implements RunWorker {
       context.workItem.description === undefined ? "" : `Issue description:\n${context.workItem.description}`,
     ].filter(Boolean).join("\n");
 
-    const result = await runPiTask({
+    const tracker = createLocalTrackerAdapter(this.trackerDir);
+    const controller = await createPiSessionController({
       cwd: this.repoRoot,
       agentType: "implementation",
-      tracker: createLocalTrackerAdapter(this.trackerDir),
+      tracker,
       workItem: context.workItem,
       modelPreference: "minimax/MiniMax-M2.5",
       thinkingLevel: "off",
-      prompt,
+      ...(this.providerCapacityService === undefined ? {} : { providerCapacityService: this.providerCapacityService }),
+      requestClass: "background",
+      sessionDir: joinPath(context.runArtifacts.runDir, "sessions"),
       onTrackerEvent: async (event) => {
         await context.logger.emit(event.event, event.details);
         await context.heartbeat?.({ lastTrackerEvent: event.event });
       },
     });
 
-    return result.usedModel === undefined
-      ? { summary: result.output || `Handled ${context.workItem.identifier}`, output: result.output }
-      : { summary: result.output || `Handled ${context.workItem.identifier}`, output: result.output, metadata: { usedModel: result.usedModel } };
+    context.activeRunRegistry?.attachControl(context.run.runId, controller);
+    const initialSnapshot = controller.snapshot();
+    await context.heartbeat?.({
+      phase: "pi_session_ready",
+      piSessionId: initialSnapshot.sessionId,
+      ...(initialSnapshot.sessionFile === undefined ? {} : { piSessionFile: initialSnapshot.sessionFile }),
+    });
+
+    const unsubscribe = controller.subscribe(async (event) => {
+      await context.logger.emit("pi.session.event", { type: event.type });
+      if (event.type === "message_update") {
+        return;
+      }
+      await context.heartbeat?.({
+        lastPiEvent: event.type,
+        ...(controller.snapshot().sessionFile === undefined ? {} : { piSessionFile: controller.snapshot().sessionFile }),
+      });
+    });
+
+    try {
+      const result = await controller.runPrompt(prompt);
+      const finalSnapshot = controller.snapshot();
+      await context.heartbeat?.({
+        phase: "pi_session_completed",
+        piSessionId: finalSnapshot.sessionId,
+        ...(finalSnapshot.sessionFile === undefined ? {} : { piSessionFile: finalSnapshot.sessionFile }),
+        piSessionFileName: finalSnapshot.sessionFile === undefined ? undefined : basename(finalSnapshot.sessionFile),
+      });
+
+      const output = result.output.trim();
+      if (output === "") {
+        throw new Error(`Implementation worker produced empty output for ${context.workItem.identifier}`);
+      }
+
+      const issue = await tracker.inspectIssue(context.workItem.identifier);
+      const commentBodies = issue.comments.map((comment) => comment.body);
+      const hasPlan = commentBodies.some((body) => body.includes("Plan"));
+      const hasProgress = commentBodies.some((body) => body.includes("Progress"));
+      const hasReviewHandoff = commentBodies.some((body) => body.includes("Review handoff"));
+      if (issue.state !== "human_review" || !hasPlan || !hasProgress || !hasReviewHandoff) {
+        throw new Error(`Implementation worker did not complete required tracker workflow for ${context.workItem.identifier}`);
+      }
+
+      return result.usedModel === undefined
+        ? { summary: output, output }
+        : { summary: output, output, metadata: { usedModel: result.usedModel } };
+    } finally {
+      unsubscribe();
+      await controller.dispose();
+    }
   }
+}
+
+function joinPath(left: string, right: string): string {
+  return `${left.replace(/\/$/, "")}/${right.replace(/^\//, "")}`;
 }

@@ -69,7 +69,7 @@ describe("orchestrator poll loop", () => {
     expect([...sink.workers.values()].some((worker) => worker.currentIssueIdentifier === "LOCAL-T1")).toBe(true);
 
     releaseGate();
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 75));
     await adapter.applyMutation("LOCAL-T1", { type: "transition", state: "human_review" });
     const secondSnapshot = await orchestrator.pollOnce();
     expect(secondSnapshot.claimedIssueIds).toHaveLength(0);
@@ -103,7 +103,7 @@ describe("orchestrator poll loop", () => {
     expect(snapshot.claimedIssueIds).toHaveLength(2);
 
     releaseGate();
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 75));
     await adapter.applyMutation("LOCAL-S1", { type: "transition", state: "human_review" });
     await adapter.applyMutation("LOCAL-S2", { type: "transition", state: "human_review" });
     const cleared = await orchestrator.pollOnce();

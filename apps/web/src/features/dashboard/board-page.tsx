@@ -1,15 +1,19 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
+  ArrowRight,
   Bot,
+  Check,
+  Clock,
   GitBranch,
+  GripVertical,
   LoaderCircle,
   MessageSquareMore,
   Plus,
   RefreshCcw,
-  Send,
+  X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CANONICAL_STATES, type CanonicalState } from "@piphony/core/types";
 import { AppShell } from "./shell";
 import type {
@@ -24,9 +28,14 @@ import {
   appendIssueComment,
   createIssue,
   getDashboardSnapshot as getDashboardSnapshotServer,
+  transitionIssue,
   updateIssue,
 } from "@/lib/server/functions";
 import { useLiveValue } from "@/lib/use-live-data";
+
+/* ------------------------------------------------------------------ */
+/*  Constants                                                          */
+/* ------------------------------------------------------------------ */
 
 const STATE_LABELS: Record<CanonicalState, string> = {
   backlog: "Backlog",
@@ -39,9 +48,37 @@ const STATE_LABELS: Record<CanonicalState, string> = {
   cancelled: "Cancelled",
 };
 
+const STATE_COLORS: Record<CanonicalState, string> = {
+  backlog: "var(--text-muted)",
+  todo: "var(--warning)",
+  in_progress: "var(--accent)",
+  human_review: "var(--danger)",
+  rework: "var(--danger)",
+  merging: "var(--live)",
+  done: "var(--live)",
+  cancelled: "var(--text-muted)",
+};
+
+/** Which states a human can manually drag an issue into */
+const VALID_TRANSITIONS: Record<CanonicalState, CanonicalState[]> = {
+  backlog: ["todo", "cancelled"],
+  todo: ["backlog", "in_progress", "cancelled"],
+  in_progress: ["human_review", "rework", "todo"],
+  human_review: ["done", "rework", "merging", "todo"],
+  rework: ["todo", "in_progress", "cancelled"],
+  merging: ["done", "human_review"],
+  done: ["rework", "backlog"],
+  cancelled: ["backlog"],
+};
+
+/* ------------------------------------------------------------------ */
+/*  Board page                                                         */
+/* ------------------------------------------------------------------ */
+
 export function BoardPage(props: {
   initialSnapshot: DashboardSnapshot;
   selectedIssueId?: string | undefined;
+  selectedIssueIdentifier?: string | undefined;
 }) {
   const navigate = useNavigate({ from: "/" });
   const dashboard = useLiveValue({
@@ -50,29 +87,27 @@ export function BoardPage(props: {
     intervalMs: 3_500,
   });
   const selectedIssue = dashboard.value.issues.find(
-    (issue) => issue.id === props.selectedIssueId,
+    (issue) => issue.id === props.selectedIssueId || issue.identifier === props.selectedIssueIdentifier,
   );
   const issuesByState = useMemo(
     () => groupIssuesByState(dashboard.value.issues),
     [dashboard.value.issues],
   );
   const [composeError, setComposeError] = useState<string | undefined>();
-  const [activeTab, setActiveTab] = useState<"global" | "create" | "details" | "steering">(
-    selectedIssue === undefined ? "global" : "details",
-  );
+  const [showCreate, setShowCreate] = useState(false);
+  const [dragState, setDragState] = useState<{
+    issueId: string;
+    fromState: CanonicalState;
+  } | null>(null);
 
-  useEffect(() => {
-    setActiveTab(selectedIssue === undefined ? "global" : "details");
-  }, [selectedIssue?.id]);
-
-  const handleSelectIssue = async (issueId?: string) => {
+  const handleSelectIssue = async (issue?: DashboardIssue) => {
     await navigate({
       search: (current) => {
-        if (issueId === undefined) {
-          const { issueId: _ignored, ...rest } = current;
+        const { issueId: _ignoredIssueId, issue: _ignoredIssue, ...rest } = current;
+        if (issue === undefined) {
           return rest;
         }
-        return { ...current, issueId };
+        return { ...rest, issue: issue.identifier };
       },
     });
   };
@@ -82,11 +117,25 @@ export function BoardPage(props: {
       setComposeError(undefined);
       const next = await createIssue({ data: input });
       dashboard.setValue(next);
-      setActiveTab("global");
+      setShowCreate(false);
     } catch (caught: unknown) {
       setComposeError(
         caught instanceof Error ? caught.message : String(caught),
       );
+    }
+  };
+
+  const handleDragTransition = async (
+    issueId: string,
+    targetState: CanonicalState,
+  ) => {
+    try {
+      const next = await transitionIssue({
+        data: { id: issueId, state: targetState },
+      });
+      dashboard.setValue(next);
+    } catch (caught: unknown) {
+      console.error("Transition failed:", caught);
     }
   };
 
@@ -98,6 +147,15 @@ export function BoardPage(props: {
           <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
             {dashboard.value.issues.length} issues
           </span>
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={() => setShowCreate((prev) => !prev)}
+            data-testid="toggle-create-issue"
+          >
+            <Plus size={12} />
+            New Issue
+          </button>
           <button
             className="ghost-button"
             type="button"
@@ -113,6 +171,17 @@ export function BoardPage(props: {
         </div>
       }
     >
+      {/* Inline create issue form */}
+      {showCreate && (
+        <div className="create-issue-banner" data-testid="create-issue-banner">
+          <IssueComposer
+            onSubmit={handleCreateIssue}
+            onCancel={() => setShowCreate(false)}
+            error={composeError}
+          />
+        </div>
+      )}
+
       <section className="board-surface">
         <div className="board-columns" data-testid="board-columns">
           {CANONICAL_STATES.map((state) => (
@@ -122,359 +191,236 @@ export function BoardPage(props: {
               issues={issuesByState[state] ?? []}
               selectedIssueId={selectedIssue?.id}
               onSelectIssue={handleSelectIssue}
+              dragState={dragState}
+              onDragStart={(issueId, fromState) =>
+                setDragState({ issueId, fromState })
+              }
+              onDragEnd={() => setDragState(null)}
+              onDrop={handleDragTransition}
+              workers={dashboard.value.workers}
             />
           ))}
         </div>
       </section>
 
-      <aside className="sidebar">
-        {selectedIssue === undefined ? (
-          <>
-            <div className="sidebar-tabs">
-              <button
-                className={`sidebar-tab ${activeTab === "global" ? "is-active" : ""}`}
-                onClick={() => setActiveTab("global")}
-              >
-                Global Observability
-              </button>
-              <button
-                className={`sidebar-tab ${activeTab === "create" ? "is-active" : ""}`}
-                onClick={() => setActiveTab("create")}
-                data-testid="toggle-create-issue"
-              >
-                New Issue
-              </button>
-            </div>
-
-            {activeTab === "create" ? (
-              <div className="sidebar-content">
-                <div className="panel">
-                  <IssueComposer
-                    onSubmit={handleCreateIssue}
-                    error={composeError}
-                  />
-                </div>
-                <div className="panel" style={{ flexGrow: 1, borderBottom: "none" }}>
-                  <div className="eyebrow">Tracker workflow</div>
-                  <p className="support-copy">
-                    New issues start in <strong>Backlog</strong>. Move them into
-                    <strong> Todo</strong> or <strong>Rework</strong> when you want the
-                    separate orchestrator process to claim them.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <ObservabilityPanel
-                workers={dashboard.value.workers}
-                recentRuns={dashboard.value.recentRuns}
-                error={dashboard.error}
-              />
-            )}
-          </>
-        ) : (
-          <>
-            <div className="sidebar-tabs">
-              <button
-                className={`sidebar-tab ${activeTab === "details" ? "is-active" : ""}`}
-                onClick={() => setActiveTab("details")}
-              >
-                Issue Details
-              </button>
-              <button
-                className={`sidebar-tab ${activeTab === "steering" ? "is-active" : ""}`}
-                onClick={() => setActiveTab("steering")}
-              >
-                Agent Steering
-              </button>
-            </div>
-
-            {activeTab === "steering" ? (
-              <IssueSteering issue={selectedIssue} />
-            ) : (
-              <div className="sidebar-content">
-                <IssueInspector
-                  issue={selectedIssue}
-                  onClose={() => void handleSelectIssue(undefined)}
-                  onSave={async (input) => {
-                    const next = await updateIssue({ data: input });
-                    dashboard.setValue(next);
-                  }}
-                  onComment={async (body) => {
-                    const next = await appendIssueComment({
-                      data: { id: selectedIssue.id, body, author: "human" },
-                    });
-                    dashboard.setValue(next);
-                  }}
-                />
-              </div>
-            )}
-          </>
-        )}
-      </aside>
+      {selectedIssue !== undefined ? (
+        <IssueInspectorModal
+          issue={selectedIssue}
+          workers={dashboard.value.workers}
+          onClose={() => void handleSelectIssue(undefined)}
+          onSave={async (input) => {
+            const next = await updateIssue({ data: input });
+            dashboard.setValue(next);
+          }}
+          onTransition={async (state) => {
+            const next = await transitionIssue({
+              data: { id: selectedIssue.id, state },
+            });
+            dashboard.setValue(next);
+          }}
+          onComment={async (body) => {
+            const next = await appendIssueComment({
+              data: { id: selectedIssue.id, body, author: "human" },
+            });
+            dashboard.setValue(next);
+          }}
+        />
+      ) : null}
     </AppShell>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/*  Board column                                                       */
+/* ------------------------------------------------------------------ */
 
 function BoardColumn(props: {
   state: CanonicalState;
   issues: DashboardIssue[];
   selectedIssueId?: string | undefined;
-  onSelectIssue: (issueId?: string | undefined) => void | Promise<void>;
+  onSelectIssue: (issue?: DashboardIssue) => void | Promise<void>;
+  dragState: { issueId: string; fromState: CanonicalState } | null;
+  onDragStart: (issueId: string, fromState: CanonicalState) => void;
+  onDragEnd: () => void;
+  onDrop: (issueId: string, targetState: CanonicalState) => void;
+  workers: DashboardWorkerStatus[];
 }) {
+  const [isOver, setIsOver] = useState(false);
+
+  const isValidTarget =
+    props.dragState !== null &&
+    props.dragState.fromState !== props.state &&
+    VALID_TRANSITIONS[props.dragState.fromState].includes(props.state);
+
   return (
-    <section className="board-column">
+    <section
+      className={`board-column ${isOver && isValidTarget ? "drop-target" : ""} ${
+        props.dragState !== null && !isValidTarget && props.dragState.fromState !== props.state
+          ? "drop-invalid"
+          : ""
+      }`}
+      onDragOver={(e) => {
+        if (isValidTarget) {
+          e.preventDefault();
+          setIsOver(true);
+        }
+      }}
+      onDragLeave={() => setIsOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsOver(false);
+        if (props.dragState && isValidTarget) {
+          props.onDrop(props.dragState.issueId, props.state);
+        }
+      }}
+      data-testid={`board-column-${props.state}`}
+    >
       <header>
-        {STATE_LABELS[props.state]}
+        <div className="column-header-label">
+          <span
+            className="column-dot"
+            style={{ background: STATE_COLORS[props.state] }}
+          />
+          {STATE_LABELS[props.state]}
+        </div>
         <span>{props.issues.length}</span>
       </header>
       <div className="issue-stack">
         {props.issues.length === 0 ? (
-          <div className="issue-empty">Empty</div>
+          <div className="issue-empty">
+            {props.dragState !== null && isValidTarget
+              ? "Drop here"
+              : "Empty"}
+          </div>
         ) : null}
         {props.issues.map((issue) => (
-          <button
+          <IssueCard
             key={issue.id}
-            type="button"
-            className={`issue-card ${issue.id === props.selectedIssueId ? "is-selected" : ""}`}
-            onClick={() => void props.onSelectIssue(issue.id)}
-            data-testid={`issue-card-${issue.identifier}`}
-          >
-            <div className="issue-card-topline">
-              <span className="issue-identifier">{issue.identifier}</span>
-              {issue.priority ? (
-                <span className="priority-icon" title={issue.priority}>
-                  ●
-                </span>
-              ) : null}
-            </div>
-            <h4>{issue.title}</h4>
-
-            {issue.state === "in_progress" ? (
-              <div className="agent-activity-bar">
-                <div className="agent-pulse" />
-                Impl Agent: working...
-              </div>
-            ) : null}
-
-            {issue.state === "human_review" ? (
-              <div className="agent-activity-bar is-warning">
-                <AlertTriangle size={10} />
-                Human Review Required
-              </div>
-            ) : null}
-
-            <div className="issue-card-footer" style={{ marginTop: "4px" }}>
-              <div className="tag-row">
-                {issue.labels.slice(0, 2).map((label) => (
-                  <span key={label} className="tag-pill">
-                    {label}
-                  </span>
-                ))}
-              </div>
-              {issue.assignee ? (
-                <span>{issue.assignee[0]?.toUpperCase()}</span>
-              ) : (
-                <span>Unassigned</span>
-              )}
-            </div>
-          </button>
+            issue={issue}
+            isSelected={issue.id === props.selectedIssueId}
+            onSelect={() => void props.onSelectIssue(issue)}
+            onDragStart={() => props.onDragStart(issue.id, props.state)}
+            onDragEnd={props.onDragEnd}
+            worker={props.workers.find(
+              (w) => w.currentIssueIdentifier === issue.identifier,
+            )}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function ObservabilityPanel(props: {
-  workers: DashboardWorkerStatus[];
-  recentRuns: DashboardRunSummary[];
-  error?: string | undefined;
+/* ------------------------------------------------------------------ */
+/*  Issue card (draggable)                                             */
+/* ------------------------------------------------------------------ */
+
+function IssueCard(props: {
+  issue: DashboardIssue;
+  isSelected: boolean;
+  onSelect: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  worker?: DashboardWorkerStatus | undefined;
 }) {
-  const [input, setInput] = useState("");
-  const activeWorkers = props.workers.filter(
-    (worker) => worker.status === "running" || worker.status === "polling",
-  ).length;
+  const { issue, worker } = props;
 
   return (
-    <div className="agent-console">
-      <div className="console-messages">
-        <div className="chat-msg agent">
-          <div className="sender">
-            <Bot size={12} /> Chief Agent
-          </div>
-          <div className="bubble">
-            Systems nominal. {activeWorkers} active agents in the swarm. What
-            would you like to check on?
-          </div>
+    <div
+      className={`issue-card ${props.isSelected ? "is-selected" : ""}`}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", issue.id);
+        props.onDragStart();
+      }}
+      onDragEnd={props.onDragEnd}
+      onClick={props.onSelect}
+      data-testid={`issue-card-${issue.identifier}`}
+    >
+      <div className="issue-card-topline">
+        <span className="issue-identifier">{issue.identifier}</span>
+        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          {issue.priority && (
+            <span
+              className={`priority-badge is-${issue.priority}`}
+              title={issue.priority}
+            >
+              {issue.priority === "critical"
+                ? "!!!"
+                : issue.priority === "high"
+                  ? "!!"
+                  : issue.priority === "medium"
+                    ? "!"
+                    : "—"}
+            </span>
+          )}
+          <GripVertical size={12} className="drag-handle" />
         </div>
-        <div className="chat-msg human">
-          <div className="bubble">
-            What is the status of the tracker-driven workflow smoke?
-          </div>
-        </div>
-        <div className="chat-msg agent">
-          <div className="sender">
-            <Bot size={12} /> Chief Agent
-          </div>
-          <div className="bubble">
-            Create or select an issue, move it from <strong>Backlog</strong> to
-            <strong> Todo</strong>, and the separate orchestrator will claim it.
-            The implementation agent will append <strong>Plan</strong>,
-            <strong> Progress</strong>, and <strong>Review handoff</strong>
-            comments before transitioning the issue to
-            <strong> Human Review</strong>.
-          </div>
-        </div>
-
-        <div className="panel panel-embedded">
-          <div className="eyebrow">Worker status</div>
-          <div className="worker-list" data-testid="worker-status-panel">
-            {props.workers.length === 0 ? (
-              <div className="issue-empty">No orchestrator heartbeat yet.</div>
-            ) : (
-              props.workers.slice(0, 4).map((worker) => (
-                <article
-                  key={worker.workerId}
-                  className="worker-card"
-                  data-testid={`worker-card-${worker.role}-${worker.workerId}`}
-                >
-                  <div className="worker-card-topline">
-                    <strong>{worker.role}</strong>
-                    <span className={`mini-run is-${worker.status}`}>
-                      {worker.status}
-                    </span>
-                  </div>
-                  <p>
-                    {worker.currentIssueIdentifier ??
-                      `${worker.host} · pid ${worker.processId}`}
-                  </p>
-                </article>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="panel panel-embedded">
-          <div className="eyebrow">Recent Runs</div>
-          <div className="run-list compact-run-list">
-            {props.recentRuns.slice(0, 5).map((run) => (
-              <Link
-                key={run.runId}
-                to="/runs"
-                search={{ runId: run.runId }}
-                className="run-item"
-              >
-                <span>{run.workItemIdentifier ?? run.runId.slice(0, 8)}</span>
-                <span className="run-status">{run.status.replace("_", " ")}</span>
-              </Link>
-            ))}
-          </div>
-        </div>
-
-        {props.error ? (
-          <div className="chat-msg agent">
-            <div className="sender">
-              <Bot size={12} /> Chief Agent
-            </div>
-            <div className="bubble">Refresh warning: {props.error}</div>
-          </div>
-        ) : null}
       </div>
 
-      <form
-        className="console-input-area"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setInput("");
-        }}
-      >
-        <textarea
-          placeholder="Ask the swarm..."
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              setInput("");
-            }
-          }}
-        />
-        <button type="submit" className="console-send" disabled={!input.trim()}>
-          <Send size={16} />
-        </button>
-      </form>
+      <h4>{issue.title}</h4>
+
+      {/* Status cues */}
+      {issue.state === "in_progress" && (
+        <div className="agent-activity-bar">
+          <div className="agent-pulse" />
+          {worker ? `${worker.role}: working` : "Agent working…"}
+        </div>
+      )}
+      {issue.state === "human_review" && (
+        <div className="agent-activity-bar is-warning">
+          <AlertTriangle size={10} />
+          Awaiting review
+        </div>
+      )}
+
+      {/* Latest run cue */}
+      {issue.latestRun && (
+        <div className="card-run-cue">
+          <span className={`mini-run is-${issue.latestRun.status}`}>
+            {issue.latestRun.status}
+          </span>
+          <span className="card-run-agent">{issue.latestRun.agentType}</span>
+        </div>
+      )}
+
+      <div className="issue-card-footer">
+        <div className="tag-row">
+          {issue.labels.slice(0, 2).map((label) => (
+            <span key={label} className="tag-pill">
+              {label}
+            </span>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          {issue.comments.length > 0 && (
+            <span
+              className="card-comment-count"
+              title={`${issue.comments.length} comment(s)`}
+            >
+              <MessageSquareMore size={10} />
+              {issue.comments.length}
+            </span>
+          )}
+          {issue.assignee ? (
+            <span className="card-avatar" title={issue.assignee}>
+              {issue.assignee[0]?.toUpperCase()}
+            </span>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
 
-function IssueSteering(props: { issue: DashboardIssue }) {
-  const [input, setInput] = useState("");
-
-  return (
-    <div className="agent-console">
-      <div className="console-messages">
-        <div className="chat-msg agent">
-          <div className="sender">
-            <Bot size={12} /> Chief Agent
-          </div>
-          <div className="bubble">
-            Connecting to implementation context for {props.issue.identifier}...
-          </div>
-        </div>
-        <div className="chat-msg agent">
-          <div className="sender">
-            <Bot size={12} /> Impl Agent
-          </div>
-          <div className="bubble">
-            This panel is advisory only. Tracker fields, comments, and workflow
-            transitions remain the source of truth for orchestration.
-          </div>
-        </div>
-        <div className="chat-msg human">
-          <div className="bubble">
-            Move the issue to Todo or Rework when you want it picked up.
-          </div>
-        </div>
-        <div className="chat-msg agent">
-          <div className="sender">
-            <Bot size={12} /> Impl Agent
-          </div>
-          <div className="bubble">
-            Understood. Once runnable, I will transition to
-            <code> in_progress</code>, leave <strong>Plan</strong>,
-            <strong> Progress</strong>, and <strong>Review handoff</strong>
-            comments, then hand back in <code>human_review</code>.
-          </div>
-        </div>
-      </div>
-
-      <form
-        className="console-input-area"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setInput("");
-        }}
-      >
-        <textarea
-          placeholder={`Steer agent on ${props.issue.identifier}...`}
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              setInput("");
-            }
-          }}
-        />
-        <button type="submit" className="console-send" disabled={!input.trim()}>
-          <Send size={16} />
-        </button>
-      </form>
-    </div>
-  );
-}
+/* ------------------------------------------------------------------ */
+/*  Issue composer (inline banner)                                     */
+/* ------------------------------------------------------------------ */
 
 function IssueComposer(props: {
   onSubmit: (input: CreateIssueInput) => Promise<void>;
+  onCancel: () => void;
   error?: string | undefined;
 }) {
   const [form, setForm] = useState<CreateIssueInput>({
@@ -482,10 +428,15 @@ function IssueComposer(props: {
     priority: "medium",
   });
   const [submitting, setSubmitting] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
 
   return (
     <form
-      className="issue-form"
+      className="create-form-inline"
       onSubmit={(event) => {
         event.preventDefault();
         setSubmitting(true);
@@ -499,104 +450,165 @@ function IssueComposer(props: {
               labels: "",
               assignee: "",
               identifier: "",
-              branchName: "",
-              prUrl: "",
             }),
           )
           .finally(() => setSubmitting(false));
       }}
       data-testid="create-issue-form"
     >
-      <label>
-        Identifier
+      <div className="create-form-row">
         <input
           value={form.identifier ?? ""}
-          onChange={(event) =>
-            setForm((current) => ({ ...current, identifier: event.target.value }))
+          onChange={(e) =>
+            setForm((c) => ({ ...c, identifier: e.target.value }))
           }
-          placeholder="Leave blank to auto-generate"
+          placeholder="ID (auto)"
+          style={{ width: "100px" }}
           data-testid="create-issue-identifier"
         />
-      </label>
-      <label>
-        Title
         <input
+          ref={titleRef}
           required
           value={form.title}
-          onChange={(event) =>
-            setForm((current) => ({ ...current, title: event.target.value }))
-          }
+          onChange={(e) => setForm((c) => ({ ...c, title: e.target.value }))}
           placeholder="Issue title"
+          style={{ flex: 1 }}
           data-testid="create-issue-title"
         />
-      </label>
-      <label>
-        Description
         <textarea
-          rows={3}
+          rows={1}
           value={form.description ?? ""}
-          onChange={(event) =>
-            setForm((current) => ({ ...current, description: event.target.value }))
+          onChange={(e) =>
+            setForm((c) => ({ ...c, description: e.target.value }))
           }
-          placeholder="Add description..."
+          placeholder="Description (optional)"
+          style={{ flex: 1, minHeight: "38px", resize: "none" }}
           data-testid="create-issue-description"
         />
-      </label>
-      <div className="form-row">
-        <label>
-          Priority
-          <select
-            value={form.priority ?? "medium"}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                priority: event.target.value as CreateIssueInput["priority"],
-              }))
-            }
-          >
-            <option value="critical">Critical</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-        </label>
-        <label>
-          Assignee
-          <input
-            value={form.assignee ?? ""}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, assignee: event.target.value }))
-            }
-            placeholder="Name"
-          />
-        </label>
+        <select
+          value={form.priority ?? "medium"}
+          onChange={(e) =>
+            setForm((c) => ({
+              ...c,
+              priority: e.target.value as CreateIssueInput["priority"],
+            }))
+          }
+          style={{ width: "100px" }}
+        >
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <input
+          value={form.assignee ?? ""}
+          onChange={(e) => setForm((c) => ({ ...c, assignee: e.target.value }))}
+          placeholder="Assignee"
+          style={{ width: "100px" }}
+        />
       </div>
-      {props.error ? (
-        <p style={{ color: "var(--failed)", fontSize: "13px" }}>
+
+      {props.error && (
+        <p style={{ color: "var(--danger)", fontSize: "12px", margin: 0 }}>
           {props.error}
         </p>
-      ) : null}
-      <button
-        className="action-button"
-        type="submit"
-        disabled={submitting}
-        data-testid="submit-create-issue"
-      >
-        {submitting ? (
-          <LoaderCircle size={14} className="spin" />
-        ) : (
-          <Plus size={14} />
-        )}
-        Create Issue
-      </button>
+      )}
+
+      <div className="create-form-actions">
+        <button
+          className="action-button"
+          type="submit"
+          disabled={submitting}
+          style={{ width: "auto", padding: "8px 20px" }}
+          data-testid="submit-create-issue"
+        >
+          {submitting ? (
+            <LoaderCircle size={14} className="spin" />
+          ) : (
+            <Plus size={14} />
+          )}
+          Create Issue
+        </button>
+        <button
+          className="ghost-button"
+          type="button"
+          onClick={props.onCancel}
+          style={{ padding: "8px 14px" }}
+        >
+          <X size={14} />
+          Cancel
+        </button>
+        <span className="support-copy" style={{ marginLeft: "8px" }}>
+          New issues start in <strong>Backlog</strong>. Drag to{" "}
+          <strong>Todo</strong> for the orchestrator to claim.
+        </span>
+      </div>
     </form>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Issue inspector modal                                              */
+/* ------------------------------------------------------------------ */
+
+function IssueInspectorModal(props: {
+  issue: DashboardIssue;
+  workers: DashboardWorkerStatus[];
+  onClose: () => void;
+  onSave: (input: UpdateIssueInput) => Promise<void>;
+  onTransition: (state: CanonicalState) => Promise<void>;
+  onComment: (body: string) => Promise<void>;
+}) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        props.onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [props.onClose]);
+
+  return (
+    <div className="issue-modal-backdrop" onClick={props.onClose} data-testid="issue-modal-backdrop">
+      <div
+        className="issue-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Issue details for ${props.issue.identifier}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="issue-modal-header">
+          <div>
+            <div className="eyebrow">Issue Details</div>
+            <strong>{props.issue.identifier}</strong>
+          </div>
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={props.onClose}
+            style={{ padding: "6px 10px" }}
+          >
+            <X size={14} />
+            Close
+          </button>
+        </div>
+        <div className="issue-modal-body">
+          <IssueInspector {...props} />
+        </div>
+      </div>
+    </div>
   );
 }
 
 function IssueInspector(props: {
   issue: DashboardIssue;
+  workers: DashboardWorkerStatus[];
   onClose: () => void;
   onSave: (input: UpdateIssueInput) => Promise<void>;
+  onTransition: (state: CanonicalState) => Promise<void>;
   onComment: (body: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<UpdateIssueInput>(() =>
@@ -605,21 +617,29 @@ function IssueInspector(props: {
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [commenting, setCommenting] = useState(false);
+  const [transitioning, setTransitioning] = useState<CanonicalState | null>(
+    null,
+  );
 
   useEffect(() => {
     setDraft(toDraft(props.issue));
     setComment("");
   }, [props.issue]);
 
+  const claimedWorker = props.workers.find(
+    (w) => w.currentIssueIdentifier === props.issue.identifier,
+  );
+  const validNextStates = VALID_TRANSITIONS[props.issue.state];
+
   return (
     <>
-      <div className="panel" style={{ paddingBottom: "16px" }}>
+      <div className="panel" data-testid="issue-inspector">
+        {/* Header */}
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            marginBottom: "16px",
           }}
         >
           <span
@@ -637,10 +657,118 @@ function IssueInspector(props: {
             onClick={props.onClose}
             style={{ padding: "4px 8px" }}
           >
-            Close
+            <X size={14} />
           </button>
         </div>
 
+        {/* Current state + quick transitions */}
+        <div className="inspector-state-row">
+          <span className={`mini-run is-${props.issue.state}`}>
+            {STATE_LABELS[props.issue.state]}
+          </span>
+          <div className="quick-transitions">
+            {validNextStates.map((nextState) => (
+              <button
+                key={nextState}
+                className={`transition-btn is-${nextState}`}
+                disabled={transitioning !== null}
+                onClick={async () => {
+                  setTransitioning(nextState);
+                  await props.onTransition(nextState);
+                  setTransitioning(null);
+                }}
+                data-testid={`transition-to-${nextState}`}
+              >
+                {transitioning === nextState ? (
+                  <LoaderCircle size={10} className="spin" />
+                ) : (
+                  <ArrowRight size={10} />
+                )}
+                {STATE_LABELS[nextState]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Worker claim */}
+        {claimedWorker && (
+          <div className="panel-embedded" style={{ padding: "10px 12px" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  gap: "8px",
+                  alignItems: "center",
+                  fontSize: "12px",
+                }}
+              >
+                <Bot size={14} style={{ color: "var(--accent)" }} />
+                <strong>{claimedWorker.role}</strong>
+                <span className={`mini-run is-${claimedWorker.status}`}>
+                  {claimedWorker.status}
+                </span>
+              </div>
+              {claimedWorker.currentRunId && (
+                <Link
+                  to="/runs"
+                  search={{ runId: claimedWorker.currentRunId }}
+                  className="ghost-button"
+                  style={{ padding: "4px 8px", fontSize: "11px" }}
+                >
+                  View run →
+                </Link>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Latest run */}
+        {props.issue.latestRun && (
+          <div className="panel-embedded" style={{ padding: "10px 12px" }}>
+            <div className="eyebrow" style={{ marginBottom: "6px" }}>
+              Latest run
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                fontSize: "12px",
+              }}
+            >
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <span className={`mini-run is-${props.issue.latestRun.status}`}>
+                  {props.issue.latestRun.status}
+                </span>
+                <span>{props.issue.latestRun.agentType}</span>
+              </div>
+              <Link
+                to="/runs"
+                search={{ runId: props.issue.latestRun.runId }}
+                className="ghost-button"
+                style={{ padding: "4px 8px", fontSize: "11px" }}
+              >
+                View run →
+              </Link>
+            </div>
+            {props.issue.latestRun.summary && (
+              <p
+                className="support-copy"
+                style={{ marginTop: "6px", fontSize: "12px" }}
+              >
+                {props.issue.latestRun.summary}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Edit fields */}
         <form
           className="issue-form"
           onSubmit={(event) => {
@@ -653,24 +781,18 @@ function IssueInspector(props: {
             Title
             <input
               value={draft.title}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  title: event.target.value,
-                }))
+              onChange={(e) =>
+                setDraft((c) => ({ ...c, title: e.target.value }))
               }
             />
           </label>
           <label>
             Description
             <textarea
-              rows={4}
+              rows={3}
               value={draft.description ?? ""}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  description: event.target.value,
-                }))
+              onChange={(e) =>
+                setDraft((c) => ({ ...c, description: e.target.value }))
               }
             />
           </label>
@@ -679,10 +801,10 @@ function IssueInspector(props: {
               Status
               <select
                 value={draft.state}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    state: event.target.value as CanonicalState,
+                onChange={(e) =>
+                  setDraft((c) => ({
+                    ...c,
+                    state: e.target.value as CanonicalState,
                   }))
                 }
                 data-testid="issue-state-select"
@@ -698,11 +820,10 @@ function IssueInspector(props: {
               Priority
               <select
                 value={draft.priority ?? "medium"}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    priority: event.target
-                      .value as UpdateIssueInput["priority"],
+                onChange={(e) =>
+                  setDraft((c) => ({
+                    ...c,
+                    priority: e.target.value as UpdateIssueInput["priority"],
                   }))
                 }
               >
@@ -718,11 +839,8 @@ function IssueInspector(props: {
               Assignee
               <input
                 value={draft.assignee ?? ""}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    assignee: event.target.value,
-                  }))
+                onChange={(e) =>
+                  setDraft((c) => ({ ...c, assignee: e.target.value }))
                 }
               />
             </label>
@@ -730,11 +848,8 @@ function IssueInspector(props: {
               Labels
               <input
                 value={draft.labels ?? ""}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    labels: event.target.value,
-                  }))
+                onChange={(e) =>
+                  setDraft((c) => ({ ...c, labels: e.target.value }))
                 }
               />
             </label>
@@ -744,11 +859,8 @@ function IssueInspector(props: {
               Branch
               <input
                 value={draft.branchName ?? ""}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    branchName: event.target.value,
-                  }))
+                onChange={(e) =>
+                  setDraft((c) => ({ ...c, branchName: e.target.value }))
                 }
               />
             </label>
@@ -756,11 +868,8 @@ function IssueInspector(props: {
               PR URL
               <input
                 value={draft.prUrl ?? ""}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    prUrl: event.target.value,
-                  }))
+                onChange={(e) =>
+                  setDraft((c) => ({ ...c, prUrl: e.target.value }))
                 }
               />
             </label>
@@ -775,12 +884,14 @@ function IssueInspector(props: {
             {saving ? (
               <LoaderCircle size={14} className="spin" />
             ) : (
-              "Save Changes"
+              <Check size={14} />
             )}
+            Save Changes
           </button>
         </form>
 
-        <div className="metadata-grid" style={{ marginTop: "20px" }}>
+        {/* Metadata */}
+        <div className="metadata-grid">
           <div className="stat-pill">
             <span>Created</span>
             <strong>{props.issue.createdAt.slice(0, 10)}</strong>
@@ -789,14 +900,6 @@ function IssueInspector(props: {
             <span>Updated</span>
             <strong>{props.issue.updatedAt.slice(0, 10)}</strong>
           </div>
-        </div>
-
-        <div className="panel-embedded">
-          <div className="eyebrow">Tracker workflow</div>
-          <p className="support-copy">
-            This UI only edits tracker state. Move the issue into <strong>Todo</strong>
-            or <strong>Rework</strong> when you want the poller to claim it.
-          </p>
         </div>
 
         {props.issue.prUrl && (
@@ -809,7 +912,6 @@ function IssueInspector(props: {
               display: "flex",
               justifyContent: "center",
               gap: "6px",
-              marginTop: "16px",
             }}
             data-testid="issue-pr-link"
           >
@@ -818,14 +920,25 @@ function IssueInspector(props: {
         )}
       </div>
 
+      {/* Comments / activity */}
       <div className="panel" style={{ flexGrow: 1, borderBottom: "none" }}>
-        <div className="eyebrow">Activity & Notes</div>
+        <div className="eyebrow">
+          Activity ({props.issue.comments.length})
+        </div>
         <div className="comment-list">
+          {props.issue.comments.length === 0 && (
+            <div className="issue-empty" style={{ padding: "14px" }}>
+              No activity yet. Comments from agents and humans will appear here.
+            </div>
+          )}
           {props.issue.comments.map((commentItem) => (
             <article key={commentItem.id} className="comment-card">
               <header>
                 <strong>{commentItem.author}</strong>
-                <span>{commentItem.createdAt.slice(0, 10)}</span>
+                <span>
+                  <Clock size={10} style={{ marginRight: "4px" }} />
+                  {commentItem.createdAt.slice(0, 16).replace("T", " ")}
+                </span>
               </header>
               <p>{commentItem.body}</p>
             </article>
@@ -846,8 +959,8 @@ function IssueInspector(props: {
             <textarea
               rows={2}
               value={comment}
-              onChange={(event) => setComment(event.target.value)}
-              placeholder="Leave a manual note..."
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Leave a comment…"
             />
           </label>
           <button
@@ -861,13 +974,17 @@ function IssueInspector(props: {
             ) : (
               <MessageSquareMore size={14} />
             )}
-            Add Note
+            Add Comment
           </button>
         </form>
       </div>
     </>
   );
 }
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
 function groupIssuesByState(
   issues: DashboardIssue[],
