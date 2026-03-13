@@ -58,6 +58,10 @@ async function killExistingWebServer(): Promise<void> {
   await runShell("pkill -f 'vite --config apps/web/vite.config.ts'", { timeoutMs: 10_000 }).catch(() => undefined);
 }
 
+async function killExistingOrchestrator(): Promise<void> {
+  await runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", { timeoutMs: 10_000 }).catch(() => undefined);
+}
+
 function startWebServer() {
   return spawn("npm", ["run", "web:dev"], {
     cwd: repoRoot,
@@ -111,10 +115,11 @@ async function waitForBrowserCondition(input: {
 
 await seedUiState();
 await killExistingWebServer();
+await killExistingOrchestrator();
 
 const session = `piphony-web-smoke-${Date.now()}`;
 const createdIdentifier = "LOCAL-450";
-const createdTitle = "UI driven workflow smoke";
+const createdTitle = "Pull-based workflow smoke";
 const boardShot = join(artifactsDir, "board.png");
 const runsShot = join(artifactsDir, "runs.png");
 const orchestrator = startOrchestratorWatch();
@@ -125,18 +130,18 @@ try {
   await runAgentBrowser(session, ["open", webUrl]);
   await runAgentBrowser(session, ["wait", "4500"]);
 
-  await browserEval(session, `document.querySelector(\"[data-testid='toggle-create-issue']\")?.click(); 'opened'`);
+  await browserEval(session, `document.querySelector("[data-testid='toggle-create-issue']")?.click(); 'opened'`);
   await runAgentBrowser(session, ["wait", "600"]);
 
   const formSet = await browserEval(
     session,
-    `const setValue=(selector,value)=>{const el=document.querySelector(selector); if(!el) return false; const prototype=el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const descriptor=Object.getOwnPropertyDescriptor(prototype,'value'); descriptor?.set?.call(el,value); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true;}; JSON.stringify({identifier:setValue(\"[data-testid='create-issue-identifier']\",'${createdIdentifier}'), title:setValue(\"[data-testid='create-issue-title']\",'${createdTitle}'), description:setValue(\"[data-testid='create-issue-description']\",'Created from the browser smoke to prove the full UI-driven workflow: create issue, start run, watch comments, and finish in agent review.')})`,
+    `const setValue=(selector,value)=>{const el=document.querySelector(selector); if(!el) return false; const prototype=el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const descriptor=Object.getOwnPropertyDescriptor(prototype,'value'); descriptor?.set?.call(el,value); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true;}; JSON.stringify({identifier:setValue("[data-testid='create-issue-identifier']",'${createdIdentifier}'), title:setValue("[data-testid='create-issue-title']",'${createdTitle}'), description:setValue("[data-testid='create-issue-description']",'Created from the browser smoke to prove the Symphony-style workflow: create issue, transition it into Todo, let the orchestrator claim it, observe tracker comments, and finish in Human Review.')})`,
   );
   if (!normalizeBrowserValue(formSet).includes("true")) {
     throw new Error(`Expected create issue form fields to update, got: ${formSet}`);
   }
 
-  await browserEval(session, `document.querySelector(\"[data-testid='submit-create-issue']\")?.click(); 'submitted'`);
+  await browserEval(session, `document.querySelector("[data-testid='submit-create-issue']")?.click(); 'submitted'`);
 
   await waitForBrowserCondition({
     session,
@@ -146,16 +151,34 @@ try {
     intervalMs: 1_500,
   });
 
-  await browserEval(session, `document.querySelector(\"[data-testid='issue-card-${createdIdentifier}']\")?.click(); 'clicked'`);
+  await browserEval(session, `document.querySelector("[data-testid='issue-card-${createdIdentifier}']")?.click(); 'clicked'`);
   await runAgentBrowser(session, ["wait", "1200"]);
-  await runAgentBrowser(session, ["screenshot", boardShot]);
 
   const inspectorState = normalizeBrowserValue(
-    await browserEval(session, `document.querySelector(\"[data-testid='issue-inspector']\")?.textContent || ''`),
+    await browserEval(session, `document.querySelector("[data-testid='issue-inspector']")?.textContent || ''`),
   );
   if (!inspectorState.includes(createdIdentifier) || !inspectorState.includes("Tracker workflow")) {
     throw new Error(`Expected issue inspector to show tracker workflow guidance, got: ${inspectorState}`);
   }
+  if (!inspectorState.includes("Backlog")) {
+    throw new Error(`Expected newly created issue to start in backlog, got: ${inspectorState}`);
+  }
+
+  await browserEval(
+    session,
+    `const select=document.querySelector("[data-testid='issue-state-select']"); if (!select) throw new Error('missing state select'); select.value='todo'; select.dispatchEvent(new Event('input',{bubbles:true})); select.dispatchEvent(new Event('change',{bubbles:true})); 'todo'`,
+  );
+  await browserEval(session, `document.querySelector("[data-testid='save-issue']")?.click(); 'saved'`);
+  await runAgentBrowser(session, ["wait", "1500"]);
+  await runAgentBrowser(session, ["screenshot", boardShot]);
+
+  await waitForBrowserCondition({
+    session,
+    expression: `document.querySelector("[data-testid='worker-status-panel']")?.textContent?.includes('orchestrator') ? 'yes' : 'no'`,
+    expected: "yes",
+    timeoutMs: 30_000,
+    intervalMs: 2_000,
+  });
 
   await waitForBrowserCondition({
     session,
@@ -167,7 +190,7 @@ try {
 
   await waitForBrowserCondition({
     session,
-    expression: `Array.from(document.querySelectorAll('select')).some((el)=>el.value === 'agent_review') ? 'yes' : 'no'`,
+    expression: `Array.from(document.querySelectorAll('select')).some((el)=>el.value === 'human_review') ? 'yes' : 'no'`,
     expected: "yes",
     timeoutMs: 180_000,
     intervalMs: 4_000,

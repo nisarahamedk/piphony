@@ -2,7 +2,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, Bot, CopyCheck, FileText, LoaderCircle, MonitorPlay, RefreshCcw } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { AppShell } from "./shell";
-import type { DashboardRunSummary, RunDetail } from "@/lib/models";
+import type { DashboardRunSummary, DashboardStats, RunDetail } from "@/lib/models";
 import { getDashboardSnapshot, getRunDetail, getRunsSnapshot } from "@/lib/server/functions";
 import { useLiveValue } from "@/lib/use-live-data";
 
@@ -15,10 +15,17 @@ export function RunsPage(props: { initialRuns: DashboardRunSummary[]; selectedRu
   });
   const [detail, setDetail] = useState<RunDetail | undefined>(undefined);
   const [detailError, setDetailError] = useState<string | undefined>(undefined);
-  const [stats, setStats] = useState(props.initialRuns);
+  const [stats, setStats] = useState<DashboardStats>({
+    openIssues: props.initialRuns.filter((run) => run.workItemId !== "none").length,
+    activeRuns: props.initialRuns.filter((run) => run.status === "running" || run.status === "created").length,
+    activeWorkers: 0,
+    staleWorkers: 0,
+    failedRuns: props.initialRuns.filter((run) => run.status === "failed").length,
+    updatedAt: new Date().toISOString(),
+  });
 
   useEffect(() => {
-    void getDashboardSnapshot().then((snapshot) => setStats(snapshot.recentRuns)).catch(() => undefined);
+    void getDashboardSnapshot().then((snapshot) => setStats(snapshot.stats)).catch(() => undefined);
   }, []);
 
   const selectedRunId = props.selectedRunId ?? runs.value[0]?.runId;
@@ -62,9 +69,8 @@ export function RunsPage(props: { initialRuns: DashboardRunSummary[]; selectedRu
   return (
     <AppShell
       stats={{
-        openIssues: stats.filter((run) => run.workItemId !== "none").length,
+        ...stats,
         activeRuns: runs.value.filter((run) => run.status === "running" || run.status === "created").length,
-        draftPrs: runs.value.filter((run) => run.summary?.includes("http")).length,
         failedRuns: runs.value.filter((run) => run.status === "failed").length,
         updatedAt: new Date().toISOString(),
       }}

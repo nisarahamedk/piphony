@@ -3,6 +3,7 @@ dist/
 coverage/
 .piphony/
 .tmp/
+tmp/
 .tanstack/
 apps/web/.output/
 *.log
@@ -10,3 +11,5 @@ pi-session-*.html
 research.md
 .DS_Store
 reference/
+.piphony-var-utility-v3/
+apps/extension/

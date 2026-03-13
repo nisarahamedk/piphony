@@ -40,7 +40,7 @@ class DockerOpenclawsseumWorker implements RunWorker {
         `2. ls apps`,
         `3. bash scripts/check-no-js.sh`,
         `4. curl -sf http://convex-backend:3210/version | head -c 120`,
-        `Then append a tracker comment saying \"docker smoke ok\" and transition ${context.workItem.identifier} to agent_review.`,
+        `Then append a tracker comment saying \"docker smoke ok\" and transition ${context.workItem.identifier} to human_review.`,
         `Finally reply with one short sentence.`,
       ].join("\n"),
       onTrackerEvent: async (event) => {
@@ -75,8 +75,8 @@ const orchestrator = new Orchestrator({
 
 const result = await orchestrator.runOnce();
 const issue = await adapter.inspectIssue("LOCAL-601");
-if (issue.state !== "agent_review") {
-  throw new Error(`Expected agent_review, got ${issue.state}`);
+if (issue.state !== "human_review") {
+  throw new Error(`Expected human_review, got ${issue.state}`);
 }
 if (!issue.comments.some((comment) => comment.body.includes("docker smoke ok"))) {
   throw new Error("Expected docker smoke comment");

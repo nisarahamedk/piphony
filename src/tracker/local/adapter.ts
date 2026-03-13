@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { CanonicalState, TrackerAdapter, TrackerArtifact, TrackerComment, TrackerMutation, WorkItem } from "../../core/types.js";
+import {
+  ACTIVE_WORK_ITEM_STATES,
+  type CanonicalState,
+  type TrackerAdapter,
+  type TrackerArtifact,
+  type TrackerComment,
+  type TrackerMutation,
+  type WorkItem,
+} from "../../core/types.js";
 import { nowIso, withOptional } from "../../core/utils.js";
 import { LocalTrackerStore } from "./state.js";
 import type { LocalIssue } from "./types.js";
-
-const DEFAULT_CANDIDATE_STATES = new Set<CanonicalState>(["todo", "in_progress", "rework"]);
 
 export class LocalTrackerAdapter implements TrackerAdapter {
   readonly provider = "local";
@@ -12,8 +18,8 @@ export class LocalTrackerAdapter implements TrackerAdapter {
   constructor(readonly store: LocalTrackerStore) {}
 
   async fetchCandidateWorkItems(): Promise<WorkItem[]> {
-    const state = await this.store.load();
-    return state.issues.filter((issue) => DEFAULT_CANDIDATE_STATES.has(issue.state)).map((issue) => this.normalize(issue));
+    const issues = await this.store.listIssuesByStates(ACTIVE_WORK_ITEM_STATES);
+    return issues.map((issue) => this.normalize(issue));
   }
 
   async fetchWorkItemById(id: string): Promise<WorkItem | undefined> {
@@ -22,9 +28,8 @@ export class LocalTrackerAdapter implements TrackerAdapter {
   }
 
   async fetchWorkItemsByState(states: CanonicalState[]): Promise<WorkItem[]> {
-    const wanted = new Set(states);
-    const state = await this.store.load();
-    return state.issues.filter((issue) => wanted.has(issue.state)).map((issue) => this.normalize(issue));
+    const issues = await this.store.listIssuesByStates(states);
+    return issues.map((issue) => this.normalize(issue));
   }
 
   normalize(issue: unknown): WorkItem {
@@ -43,6 +48,8 @@ export class LocalTrackerAdapter implements TrackerAdapter {
               ...local.metadata,
               comments: local.comments.length,
               artifacts: local.artifacts.length,
+              createdAt: local.createdAt,
+              updatedAt: local.updatedAt,
             },
           },
           "description",

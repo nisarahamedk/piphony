@@ -1,165 +1,326 @@
 # Piphony Handoff
 
-This document primes a new session to continue building Piphony.
+This document is the starting point for the next session.
 
-## Repo / Paths
+## Project root
 
-Project root:
 - `/Users/nisar/Workspace/piphony`
 
-Primary spec:
-- `/Users/nisar/Workspace/piphony/doc/symphony_rebuild_v2_spec.md`
+## Primary spec / reference
 
-Reference copy of original Symphony:
-- `/Users/nisar/Workspace/piphony/reference/symphony`
+- Spec: `doc/symphony_rebuild_v2_spec.md`
+- Progress plan: `slice.md`
+- Symphony reference: `reference/symphony/`
+- Openclawsseum reference repo: `reference/openclawsseum/`
 
-## Project Identity
+## Current product direction
 
-**Piphony** is a pi-native rebuild of Symphony.
+Piphony is now explicitly **hosted-first** and **pull-based**:
 
-V1 is intentionally:
-- Symphony-like in orchestration loop
-- pi-native in agent model
-- Linear-first
-- Docker-Compose-first
-- multi-tracker-capable later
-- multi-runtime-capable later
-- explicitly de-scoped in durable workflow / heavy control plane complexity
+- the **UI is a tracker client**, not a run launcher
+- the **orchestrator polls** runnable tracker items, Symphony-style
+- the **agent updates tracker state/comments** through tracker tools while it works
+- the **control plane must not depend on repo toolchains**
+- repo/toolchain execution belongs in runtime or repo-owned scripts
+- no baked-in policy/guardrails in Piphony core; repo/user `.pi/extensions` are the governance surface
 
-## Locked V1 Decisions
+## What is implemented now
 
-### Core architecture
-- `pi` is the only supported agent runtime in v1.
-- Custom agents are **Agent Profiles** on top of pi.
-- Guardrails are implemented as **pi extensions**.
-- No standalone policy proxy layer in v1.
-- No durable workflow engine in v1.
-- Single orchestrator process in v1.
+### Core / orchestration
 
-### Execution model
-- The **pi session runs on the control plane**.
-- Preserve the tool name **`bash`**.
-- Override `bash` via a pi extension and proxy commands to the selected target runtime.
-- Do **not** build remote `read` / `write` / `edit` tools in v1.
-- Tracker writes happen through pi-visible tools.
+Implemented in `src/`:
 
-### Tracker / runtime
-- First real tracker: **Linear**.
-- Also build a **local tracker adapter** early for full smoke testing.
-- First runtime provider: **Docker Compose**.
-- Kubernetes / Okteto later.
+- SQLite-backed local tracker authority
+- local tracker adapter
+- pull-based orchestrator watch loop
+- worker heartbeat persistence + reconciliation
+- Symphony-aligned state model
+- hosted-safe workflow loader/executor/runtime separation
+- GitHub CLI wrapper tool
+- Docker runtime + Openclawsseum smoke
+- real feature-shipping smoke against GitHub-backed `reference/openclawsseum`
 
-### Retry / restart model
-- Always create a **fresh runtime** on retry/restart.
-- Reuse branch if a branch with the issue identifier already exists and the issue is not terminal.
-- Branch name = issue identifier.
-- Close stale/invalid PRs.
-- Durable continuity comes from:
-  - branch state
-  - tracker/workpad state
-  - `.symphony/PROGRESS.md`
+Key files:
 
-### Handoff mechanism
-- Use `.symphony/PROGRESS.md` in the repo being worked on.
-- Agents should keep it current and commit it.
-- No raw session-log replay required in v1.
+- `src/core/orchestrator.ts`
+- `src/core/types.ts`
+- `src/tracker/local/state.ts`
+- `src/tracker/local/adapter.ts`
+- `src/tracker/local/status-sink.ts`
+- `src/ui/worker.ts`
+- `src/cli/orchestrator-watch.ts`
+- `src/workflow/*`
 
-### Config
-- Keep config shape close to current Symphony.
-- `WORKFLOW.md` remains a primary repo-owned contract surface.
+### Local tracker state model
 
-## Important Runtime / Testing Mental Model
+Canonical states now are:
 
-### Local tracker requirement
-The local tracker is a **first-class adapter**, not a mock.
-It should match real tracker behavior in both directions:
-1. tracker -> orchestrator
-2. agent -> tracker
+- `backlog`
+- `todo`
+- `in_progress`
+- `human_review`
+- `rework`
+- `merging`
+- `done`
+- `cancelled`
 
-This gives a full smoke-test surface:
-- orchestrator pulls from local tracker
-- agent mutates the same local tracker through tracker tools
-- no Linear dependency required for end-to-end testing
+Runnable states:
 
-### Runtime execution
-The right v1 model is:
-- orchestrator provisions runtime
-- orchestrator chooses target runtime
-- pi runs on control plane
-- `bash` is proxied to the selected target runtime via extension
+- `todo`
+- `in_progress`
+- `rework`
+- `merging`
 
-Examples:
-- Docker Compose target -> `docker compose exec ... bash -lc ...`
-- Okteto target -> `okteto exec ... -- bash -lc ...`
-- Kubernetes target -> likely `kubectl exec ... -- bash -lc ...`
+Terminal states:
 
-## Recommended First Build Slice
+- `done`
+- `cancelled`
 
-Build these first, in order:
+### Built-in web UI
 
-1. **tracker-local**
-   - file-backed local tracker state
-   - adapter contract
-   - issue state transitions
-   - comments / artifact attachment basics
+Implemented under `apps/web/`:
 
-2. **local tracker CLI**
-   - create issue
-   - move issue state
-   - comment on issue
-   - inspect issue
-   - reset / dump state
+- TanStack Start app
+- board view
+- runs view
+- local tracker data reads
+- worker health visibility
+- issue create/edit/transition
+- browser smoke using `agent-browser`
 
-3. **minimal orchestrator loop**
-   - poll local tracker
-   - pick candidate issue
-   - start a run
-   - log status
+Key files:
 
-4. **pi session runner**
-   - start pi on control plane
-   - load a minimal Agent Profile
+- `apps/web/src/features/dashboard/board-page.tsx`
+- `apps/web/src/features/dashboard/runs-page.tsx`
+- `apps/web/src/features/dashboard/shell.tsx`
+- `apps/web/src/lib/models.ts`
+- `apps/web/src/lib/server/functions.ts`
+- `apps/web/src/lib/server/piphony-data.ts`
+- `apps/web/src/styles.css`
+- `src/smoke/web-ui.ts`
 
-5. **target-proxied `bash` override**
-   - override pi `bash` with extension
-   - route execution to selected target runtime
-   - start with simple local/dev target transport if helpful, then Docker Compose
+## Validation status
 
-6. **local tracker tool path for the agent**
-   - expose tracker tool(s) against local tracker
-   - prove end-to-end state mutation works
+These were passing at the end of this session:
 
-This slice should allow a real smoke test of:
-- issue created in local tracker
-- orchestrator picks it up
-- pi runs
-- agent executes bash against target
-- agent updates tracker
-- orchestrator sees updated state
+- `npm run typecheck:web`
+- `npm test`
+- `npm run build`
+- `npm run smoke:web`
+- `npm run smoke:tracker-local`
+- `npm run smoke:orchestrator`
+- `npm run smoke:observability`
 
-## Suggested Immediate Next Step
+The browser smoke proves:
 
-Start by scaffolding:
-- package layout from the spec
-- `tracker-local`
-- local tracker CLI
-- core tracker interface
-- minimal orchestrator loop against local tracker
+1. create issue in UI
+2. issue starts in `backlog`
+3. transition issue to `todo`
+4. separate orchestrator poller claims it
+5. implementation agent appends tracker comments
+6. issue lands in `human_review`
+7. runs view shows transcript / run detail
 
-## Final Reminder
+## Important current user feedback
 
-Avoid over-engineering v1.
+The user is happy with the **visual direction** of the UI after the latest pass.
 
-Do **not** start with:
-- Postgres
-- TanStack Start UI
-- durable workflows
-- multi-instance coordination
-- generic policy proxy system
-- remote read/write/edit tools
+However, the UI is still considered **not functional enough**.
 
-The immediate goal is to validate the core loop with:
-- pi-native agent profiles
-- proxied bash execution
-- tracker guardrails
-- local smoke testing
+### Meaning of “looks good visually, but not functional”
+
+Be careful here: the issue is no longer mainly aesthetics.
+
+The latest UI now looks closer to the desired Linear/Jira-like surface, but several pieces still behave like a prototype rather than a serious tracker client.
+
+## Highest-priority next-session goal
+
+Turn the UI from a visually good mock/prototype into a genuinely functional tracker + observability client.
+
+## Most likely functional gaps to address next
+
+These are the areas to inspect first.
+
+### 1. Right rail still contains prototype/advisory content
+
+In `apps/web/src/features/dashboard/board-page.tsx`:
+
+- the “Global Observability” chat panel is still mostly static/advisory
+- the “Agent Steering” panel is also static/advisory
+- these panes look polished, but they are not yet meaningfully interactive
+
+Likely next move:
+
+- either replace them with truly useful live views
+- or deliberately simplify/remove pseudo-chat behavior and make the rail clearly operational
+
+A better functional right rail would emphasize:
+
+- selected issue metadata
+- state transitions
+- comments timeline
+- latest linked run
+- worker claim/heartbeat for that issue
+- validation / artifact pointers
+
+### 2. Board behavior is still basic
+
+The board currently supports:
+
+- create issue
+- select issue
+- edit issue fields in the inspector
+- transition issue via select/save
+
+But it still does **not** feel like a real tracker board yet.
+
+Likely improvements:
+
+- make board cards denser and more informative
+- add more reliable latest-run / claim / state cues on cards
+- consider drag/drop or at least quicker workflow transitions if helpful
+- make lane semantics clearer for backlog/todo/in_progress/human_review/rework
+
+### 3. Observability should feel first-class, not bolted on
+
+Runs view exists and works, but the product story is still split:
+
+- board is tracker-ish
+- right rail is partly faux conversational
+- runs page is real observability
+
+Need stronger integration between:
+
+- issue
+- current claim/worker
+- latest run
+- transcript
+- comments / review handoff
+
+### 4. Worker visibility should be more obviously useful
+
+Worker heartbeats are persisted and displayed, but likely need better UX:
+
+- more obvious stale/offline state
+- stronger mapping from worker -> claimed issue -> current run
+- better operator-grade language
+
+### 5. UI should mimic Jira/Linear semantics more literally
+
+Remember the desired long-term behavior:
+
+- UI creates/edits/transitions issues
+- orchestrator pulls from tracker
+- agent updates tracker via tracker tools
+- UI observes runs/comments/state
+
+That means the UI should feel like a tracker first, not a chat app.
+
+## Practical next-session plan
+
+### Step 1 — Reassess current UI against functionality, not aesthetics
+
+Start by reading:
+
+- `apps/web/src/features/dashboard/board-page.tsx`
+- `apps/web/src/features/dashboard/runs-page.tsx`
+- `apps/web/src/features/dashboard/shell.tsx`
+- `apps/web/src/lib/server/piphony-data.ts`
+- `apps/web/src/lib/server/functions.ts`
+- `src/smoke/web-ui.ts`
+
+Then make a short list of exactly which UI parts are:
+
+- real/live
+- partially real
+- static/prototype-only
+
+### Step 2 — Decide whether to keep or remove faux chat panes
+
+This is the most likely product cleanup.
+
+If the “Global Observability” / “Agent Steering” surfaces are not becoming real immediately, replace them with operational panels such as:
+
+- issue activity feed
+- run summary / latest transcript snippet
+- worker assignment / heartbeat block
+- workflow help / valid next transitions
+
+### Step 3 — Tighten issue inspector functionality
+
+Make the issue detail panel feel like the real center of work:
+
+- field editing
+- comments
+- branch / PR metadata
+- linked run
+- status change UX
+- current worker / last run visibility
+
+### Step 4 — Improve board and run linkage
+
+For each issue card and issue detail, make it obvious:
+
+- whether it has a current/last run
+- whether a worker currently owns it
+- what happened last
+- what the human should do next
+
+### Step 5 — Update browser smoke if UI semantics change
+
+If the right rail or workflow affordances change, update:
+
+- `src/smoke/web-ui.ts`
+
+Keep the architectural invariant:
+
+- no direct UI run spawn path
+- smoke must remain tracker-transition -> poller claim -> agent tracker writes -> observed final state
+
+## Commands worth using next session
+
+### Core
+
+- `npm run typecheck`
+- `npm test`
+- `npm run build`
+
+### Web / local UX
+
+- `npm run web:dev`
+- `npm run orchestrator:watch`
+- `npm run smoke:web`
+
+### Additional smoke coverage
+
+- `npm run smoke:tracker-local`
+- `npm run smoke:orchestrator`
+- `npm run smoke:observability`
+- `npm run smoke:docker`
+
+## Notes about the current repo state
+
+- There is an experimental worktree/prototype directory:
+  - `.piphony-var-utility-v3/`
+- It was used as design inspiration for the recent UI pass.
+- Treat it as a reference/prototype source, not canonical app code.
+
+There are also multiple modified files in the repo from the broader slice 10–14 work. Do not assume the only remaining work is UI.
+
+## Key architectural constraints to preserve
+
+Do **not** regress these:
+
+- keep orchestration **pull-based**
+- keep UI as tracker/observability client only
+- keep tracker as the source of truth
+- keep agent-owned tracker writes via tracker tools
+- keep hosted-safe control-plane/runtime boundary
+- no backward-compat fallbacks needed
+- prefer repo-owned scripts over generic stack assumptions
+
+## Recommended opening prompt for the next session
+
+Use something like:
+
+> Read `doc/handoff.md`, `slice.md`, and the current web UI files under `apps/web/src/features/dashboard/`. The UI now looks close to the desired Linear/Jira-like surface, but it still feels functionally prototype-ish. Keep the current pull-based architecture intact and make the UI genuinely useful as a tracker + observability client rather than a polished mock. Revalidate with `npm test`, `npm run build`, and `npm run smoke:web`.

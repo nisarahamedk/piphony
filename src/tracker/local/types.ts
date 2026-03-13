@@ -1,4 +1,4 @@
-import type { CanonicalState, TrackerArtifact, TrackerComment } from "../../core/types.js";
+import type { CanonicalState, TrackerArtifact, TrackerComment, WorkerHeartbeat } from "../../core/types.js";
 
 export interface LocalIssue {
   id: string;
@@ -16,8 +16,11 @@ export interface LocalIssue {
   updatedAt: string;
 }
 
+export interface LocalTrackerWorker extends WorkerHeartbeat {}
+
 export interface LocalTrackerState {
   version: number;
   provider: "local";
   issues: LocalIssue[];
+  workers: LocalTrackerWorker[];
 }

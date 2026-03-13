@@ -1,7 +1,7 @@
 export const CANONICAL_STATES = [
+  "backlog",
   "todo",
   "in_progress",
-  "agent_review",
   "human_review",
   "rework",
   "merging",
@@ -9,7 +9,22 @@ export const CANONICAL_STATES = [
   "cancelled",
 ] as const;
 
+export const ACTIVE_WORK_ITEM_STATES = [
+  "todo",
+  "in_progress",
+  "rework",
+  "merging",
+] as const;
+
+export const TERMINAL_WORK_ITEM_STATES = [
+  "done",
+  "cancelled",
+] as const;
+
 export type CanonicalState = (typeof CANONICAL_STATES)[number];
+export type ActiveWorkItemState = (typeof ACTIVE_WORK_ITEM_STATES)[number];
+export type TerminalWorkItemState = (typeof TERMINAL_WORK_ITEM_STATES)[number];
+export type WorkerStatus = "idle" | "polling" | "running" | "stale" | "offline";
 
 export interface WorkItem {
   provider: string;
@@ -130,4 +145,39 @@ export interface ValidationResult {
   summary: string;
   details?: Record<string, unknown>;
   artifacts?: string[];
+}
+
+export interface WorkerHeartbeat {
+  workerId: string;
+  ownerId: string;
+  role: string;
+  status: WorkerStatus;
+  processId: number;
+  host: string;
+  startedAt: string;
+  lastSeenAt: string;
+  lastPollAt?: string;
+  nextPollAt?: string;
+  currentIssueId?: string;
+  currentIssueIdentifier?: string;
+  currentRunId?: string;
+  details: Record<string, unknown>;
+}
+
+export interface OrchestratorSnapshot {
+  instanceId: string;
+  startedAt: string;
+  status: WorkerStatus;
+  pollIntervalMs: number;
+  maxConcurrentWorkers: number;
+  lastPollAt?: string;
+  nextPollAt?: string;
+  claimedIssueIds: string[];
+  runningWorkers: WorkerHeartbeat[];
+}
+
+export interface OrchestratorStatusSink {
+  syncSnapshot(snapshot: OrchestratorSnapshot): Promise<void>;
+  upsertWorker(heartbeat: WorkerHeartbeat): Promise<void>;
+  deleteWorker(workerId: string): Promise<void>;
 }

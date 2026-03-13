@@ -3,70 +3,76 @@ import { Activity, ArrowUpRight, CircleDot, LayoutPanelLeft, Radar } from "lucid
 import type { PropsWithChildren, ReactNode } from "react";
 import type { DashboardStats } from "@/lib/models";
 
-export function AppShell(props: PropsWithChildren<{ stats: DashboardStats; masthead?: ReactNode }>) {
+export function AppShell(
+  props: PropsWithChildren<{ stats: DashboardStats; masthead?: ReactNode }>,
+) {
   return (
     <div className="app-frame">
-      <div className="app-noise" />
-      <header className="topbar shell-card">
+      <header className="topbar">
         <div className="brand-block">
-          <div className="brand-mark" aria-hidden="true">
-            <Radar size={20} />
+          <div className="brand-mark">
+            <Radar size={16} />
           </div>
-          <div>
-            <p className="eyebrow">Piphony control surface</p>
-            <h1>Piphony Dispatch</h1>
-          </div>
+          <span>Piphony</span>
         </div>
         <nav className="topnav" aria-label="Primary">
-          <Link to="/" className="nav-link" activeProps={{ className: "nav-link is-active" }}>
-            <LayoutPanelLeft size={16} />
+          <Link
+            to="/"
+            className="nav-link"
+            activeProps={{ className: "nav-link is-active" }}
+          >
+            <LayoutPanelLeft size={14} />
             Board
           </Link>
-          <Link to="/runs" className="nav-link" activeProps={{ className: "nav-link is-active" }}>
-            <Activity size={16} />
+          <Link
+            to="/runs"
+            className="nav-link"
+            activeProps={{ className: "nav-link is-active" }}
+          >
+            <Activity size={14} />
             Runs
           </Link>
         </nav>
         <div className="topbar-badges">
           <span className="signal-pill is-live">
-            <CircleDot size={12} />
-            local-first
+            <CircleDot size={10} />
+            Local-first
           </span>
-          <a className="signal-pill" href="https://github.com/nisarahamedk/openclawsseum/pulls" target="_blank" rel="noreferrer">
-            open PRs
-            <ArrowUpRight size={12} />
+          <a
+            className="signal-pill"
+            href="https://github.com/nisarahamedk/piphony/pulls"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open PRs
+            <ArrowUpRight size={10} />
           </a>
         </div>
       </header>
 
-      <section className="hero-grid">
-        <div className="hero-copy shell-card shell-card-hero">
-          <p className="eyebrow">Board-first tracker + observability</p>
-          <h2>Built to rehearse autonomous delivery without external tracker lock-in.</h2>
-          <p>
-            The local tracker, run logs, branch metadata, PR links, and validation signals all live in one place.
-            It is intentionally opinionated: human-friendly on the surface, deterministic underneath. You can smoke test the whole surface end-to-end with the <code>agent-browser</code> CLI.
-          </p>
+      <div className="sub-header">
+        <div className="metrics-strip">
+          <div className="metric-tile">
+            <span>Open</span>
+            <strong>{props.stats.openIssues}</strong>
+          </div>
+          <div className="metric-tile">
+            <span>Active runs</span>
+            <strong>{props.stats.activeRuns}</strong>
+          </div>
+          <div className="metric-tile">
+            <span>Active workers</span>
+            <strong>{props.stats.activeWorkers}</strong>
+          </div>
+          <div className="metric-tile">
+            <span>Failed</span>
+            <strong>{props.stats.failedRuns}</strong>
+          </div>
         </div>
-        <div className="hero-metrics shell-card">
-          <Metric label="open work" value={String(props.stats.openIssues)} accent="brass" />
-          <Metric label="active runs" value={String(props.stats.activeRuns)} accent="mint" />
-          <Metric label="draft PRs" value={String(props.stats.draftPrs)} accent="violet" />
-          <Metric label="failed runs" value={String(props.stats.failedRuns)} accent="rose" />
-        </div>
-      </section>
+        {props.masthead}
+      </div>
 
-      {props.masthead}
-      <main>{props.children}</main>
-    </div>
-  );
-}
-
-function Metric(props: { label: string; value: string; accent: "brass" | "mint" | "violet" | "rose" }) {
-  return (
-    <div className={`metric-tile is-${props.accent}`}>
-      <span>{props.label}</span>
-      <strong>{props.value}</strong>
+      <main className="main-layout">{props.children}</main>
     </div>
   );
 }

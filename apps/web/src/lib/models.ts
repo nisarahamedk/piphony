@@ -1,4 +1,4 @@
-import type { CanonicalState } from "@piphony/core/types";
+import type { CanonicalState, WorkerStatus } from "@piphony/core/types";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -52,10 +52,27 @@ export interface DashboardIssue {
   latestRun?: DashboardRunSummary;
 }
 
+export interface DashboardWorkerStatus {
+  workerId: string;
+  ownerId: string;
+  role: string;
+  status: WorkerStatus;
+  processId: number;
+  host: string;
+  startedAt: string;
+  lastSeenAt: string;
+  lastPollAt?: string;
+  nextPollAt?: string;
+  currentIssueIdentifier?: string;
+  currentRunId?: string;
+  details: Record<string, JsonValue>;
+}
+
 export interface DashboardStats {
   openIssues: number;
   activeRuns: number;
-  draftPrs: number;
+  activeWorkers: number;
+  staleWorkers: number;
   failedRuns: number;
   updatedAt: string;
 }
@@ -63,6 +80,7 @@ export interface DashboardStats {
 export interface DashboardSnapshot {
   issues: DashboardIssue[];
   recentRuns: DashboardRunSummary[];
+  workers: DashboardWorkerStatus[];
   stats: DashboardStats;
 }
 

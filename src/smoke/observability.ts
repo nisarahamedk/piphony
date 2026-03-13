@@ -21,7 +21,7 @@ class SuccessWorker implements RunWorker {
       agentType: "implementation",
       tracker: this.adapter,
       workItem: context.workItem,
-      prompt: `Use tracker_get_issue on ${context.workItem.identifier}. Add a comment saying \"observability success\". Transition the issue to agent_review. Reply with one sentence.`,
+      prompt: `Use tracker_get_issue on ${context.workItem.identifier}. Add a comment saying \"observability success\". Transition the issue to human_review. Reply with one sentence.`,
       onTrackerEvent: async (event) => {
         await context.logger.emit(event.event, event.details);
       },

@@ -1,14 +1,15 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { CANONICAL_STATES, type CanonicalState } from "@piphony/core/types";
+import { CANONICAL_STATES, type CanonicalState, type WorkerStatus } from "@piphony/core/types";
 import { nowIso } from "@piphony/core/utils";
 import { LocalTrackerStore } from "@piphony/tracker/local/state";
-import type { LocalIssue, LocalTrackerState } from "@piphony/tracker/local/types";
+import type { LocalIssue, LocalTrackerState, LocalTrackerWorker } from "@piphony/tracker/local/types";
 import type {
   DashboardIssue,
   DashboardRunSummary,
   DashboardSnapshot,
+  DashboardWorkerStatus,
   JsonValue,
   RunDetail,
 } from "../models";
@@ -17,17 +18,14 @@ const repoRoot = resolve(process.cwd());
 const piphonyDir = resolve(repoRoot, ".piphony");
 const trackerDir = resolve(piphonyDir, "tracker-local");
 const runsDir = resolve(piphonyDir, "runs");
+const WORKER_STALE_AFTER_MS = 15_000;
 
 export function getTrackerStore(): LocalTrackerStore {
   return new LocalTrackerStore({ trackerDir });
 }
 
-export function getRepoRoot(): string {
-  return repoRoot;
-}
-
 export async function readDashboardSnapshot(): Promise<DashboardSnapshot> {
-  const [issues, recentRuns] = await Promise.all([readIssues(), readRunsIndex()]);
+  const [issues, recentRuns, workers] = await Promise.all([readIssues(), readRunsIndex(), readWorkers()]);
   const byIssueId = new Map<string, DashboardRunSummary>();
   for (const run of recentRuns) {
     if (run.workItemId !== "none" && !byIssueId.has(run.workItemId)) {
@@ -43,10 +41,12 @@ export async function readDashboardSnapshot(): Promise<DashboardSnapshot> {
   return {
     issues: enrichedIssues,
     recentRuns,
+    workers,
     stats: {
       openIssues: enrichedIssues.filter((issue) => !["done", "cancelled"].includes(issue.state)).length,
       activeRuns: recentRuns.filter((run) => run.status === "running" || run.status === "created").length,
-      draftPrs: enrichedIssues.filter((issue) => typeof issue.prUrl === "string" && issue.prUrl.trim() !== "").length,
+      activeWorkers: workers.filter((worker) => worker.status === "running" || worker.status === "polling").length,
+      staleWorkers: workers.filter((worker) => worker.status === "stale").length,
       failedRuns: recentRuns.filter((run) => run.status === "failed").length,
       updatedAt: nowIso(),
     },
@@ -54,9 +54,7 @@ export async function readDashboardSnapshot(): Promise<DashboardSnapshot> {
 }
 
 export async function readIssues(): Promise<DashboardIssue[]> {
-  const store = getTrackerStore();
-  await store.ensure();
-  const state = await store.load();
+  const state = await getTrackerStore().load();
   return state.issues
     .map((issue) => serializeIssue(issue))
     .sort((left, right) => left.identifier.localeCompare(right.identifier, undefined, { numeric: true }));
@@ -65,6 +63,13 @@ export async function readIssues(): Promise<DashboardIssue[]> {
 export async function readIssueById(id: string): Promise<DashboardIssue | undefined> {
   const issues = await readIssues();
   return issues.find((issue) => issue.id === id || issue.identifier === id);
+}
+
+export async function readWorkers(): Promise<DashboardWorkerStatus[]> {
+  const state = await getTrackerStore().load();
+  return state.workers
+    .map((worker) => serializeWorker(worker))
+    .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
 }
 
 export async function readRunsIndex(): Promise<DashboardRunSummary[]> {
@@ -127,7 +132,7 @@ export function normalizeOptionalString(value?: string): string | undefined {
 }
 
 export function normalizeState(value: string): CanonicalState {
-  return CANONICAL_STATES.includes(value as CanonicalState) ? (value as CanonicalState) : "todo";
+  return CANONICAL_STATES.includes(value as CanonicalState) ? (value as CanonicalState) : "backlog";
 }
 
 function serializeIssue(issue: LocalIssue): DashboardIssue {
@@ -154,6 +159,31 @@ function serializeIssue(issue: LocalIssue): DashboardIssue {
     artifacts: issue.artifacts.map((artifact) => ({ ...artifact })),
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt,
+  };
+}
+
+function serializeWorker(worker: LocalTrackerWorker): DashboardWorkerStatus {
+  const lastSeenMs = Date.parse(worker.lastSeenAt);
+  const status = worker.status === "offline"
+    ? "offline"
+    : Number.isFinite(lastSeenMs) && Date.now() - lastSeenMs > WORKER_STALE_AFTER_MS
+      ? "stale"
+      : worker.status;
+
+  return {
+    workerId: worker.workerId,
+    ownerId: worker.ownerId,
+    role: worker.role,
+    status: status as WorkerStatus,
+    processId: worker.processId,
+    host: worker.host,
+    startedAt: worker.startedAt,
+    lastSeenAt: worker.lastSeenAt,
+    ...(worker.lastPollAt === undefined ? {} : { lastPollAt: worker.lastPollAt }),
+    ...(worker.nextPollAt === undefined ? {} : { nextPollAt: worker.nextPollAt }),
+    ...(worker.currentIssueIdentifier === undefined ? {} : { currentIssueIdentifier: worker.currentIssueIdentifier }),
+    ...(worker.currentRunId === undefined ? {} : { currentRunId: worker.currentRunId }),
+    details: toJsonRecord(worker.details),
   };
 }
 
@@ -247,6 +277,34 @@ async function readTextIfExists(path: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+function toJsonRecord(value: Record<string, unknown>): Record<string, JsonValue> {
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, item]) => {
+      const serialized = toJsonValue(item);
+      return serialized === undefined ? [] : [[key, serialized]];
+    }),
+  );
+}
+
+function toJsonValue(value: unknown): JsonValue | undefined {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => toJsonValue(item))
+      .filter((item): item is JsonValue => item !== undefined);
+    return items;
+  }
+  if (typeof value === "object") {
+    return toJsonRecord(value as Record<string, unknown>);
+  }
+  return undefined;
 }
 
 export async function readTrackerState(): Promise<LocalTrackerState> {

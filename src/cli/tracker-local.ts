@@ -28,7 +28,7 @@ async function main(): Promise<void> {
       const identifier = requireValue(getFlag(args, "--identifier"), "--identifier is required");
       const title = requireValue(getFlag(args, "--title"), "--title is required");
       const description = getFlag(args, "--description");
-      const rawState = getFlag(args, "--state", "todo") ?? "todo";
+      const rawState = getFlag(args, "--state", "backlog") ?? "backlog";
       if (!isCanonicalState(rawState)) throw new Error(`Invalid state: ${rawState}`);
       const issue = await adapter.store.createIssue(
         description === undefined

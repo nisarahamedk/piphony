@@ -1,8 +1,19 @@
 import { join } from "node:path";
+import { hostname } from "node:os";
 import { RunLogger } from "../observability/logger.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import type { WorkflowDefinition } from "../workflow/types.js";
-import type { RunRecord, RunWorkerResult, RuntimeProvider, TrackerAdapter, WorkItem } from "./types.js";
+import {
+  ACTIVE_WORK_ITEM_STATES,
+  type OrchestratorSnapshot,
+  type OrchestratorStatusSink,
+  type RunRecord,
+  type RunWorkerResult,
+  type RuntimeProvider,
+  type TrackerAdapter,
+  type WorkItem,
+  type WorkerHeartbeat,
+} from "./types.js";
 import { createRunId, nowIso, withOptional } from "./utils.js";
 
 export interface RunWorkerContext {
@@ -11,6 +22,7 @@ export interface RunWorkerContext {
   logger: RunLogger;
   runtimeProvider?: RuntimeProvider;
   workspacePath?: string;
+  heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
 }
 
 export interface RunWorker {
@@ -28,6 +40,10 @@ export interface OrchestratorOptions {
   agentType?: string;
   attemptNumber?: number;
   workItemId?: string;
+  pollIntervalMs?: number;
+  maxConcurrentWorkers?: number;
+  instanceId?: string;
+  statusSink?: OrchestratorStatusSink;
 }
 
 export interface RunOnceResult {
@@ -37,10 +53,80 @@ export interface RunOnceResult {
   logger: RunLogger;
 }
 
-const DEFAULT_CANDIDATE_STATES = new Set(["todo", "in_progress", "rework"]);
+interface RunningEntry {
+  workerHeartbeat: WorkerHeartbeat;
+  workItem: WorkItem;
+  run: RunRecord;
+  logger: RunLogger;
+  promise: Promise<void>;
+  result?: RunWorkerResult;
+  error?: unknown;
+  settled: boolean;
+}
+
+const ACTIVE_STATES = new Set<string>(ACTIVE_WORK_ITEM_STATES);
+const PRIORITY_RANKS: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
 
 export class Orchestrator {
-  constructor(private readonly options: OrchestratorOptions) {}
+  private readonly instanceId: string;
+  private readonly startedAt = nowIso();
+  private readonly pollIntervalMs: number;
+  private readonly maxConcurrentWorkers: number;
+  private readonly host = hostname();
+  private readonly processId = process.pid;
+  private readonly claimed = new Set<string>();
+  private readonly running = new Map<string, RunningEntry>();
+  private status: OrchestratorSnapshot["status"] = "idle";
+  private lastPollAt: string | undefined;
+  private nextPollAt: string | undefined;
+
+  constructor(private readonly options: OrchestratorOptions) {
+    this.instanceId = options.instanceId ?? createRunId("orchestrator");
+    this.pollIntervalMs = options.pollIntervalMs ?? 3_000;
+    this.maxConcurrentWorkers = options.maxConcurrentWorkers ?? 1;
+  }
+
+  async pollOnce(): Promise<OrchestratorSnapshot> {
+    this.status = "polling";
+    this.nextPollAt = undefined;
+    await this.flushSnapshot();
+
+    await this.reconcileRunningWorkers();
+
+    const capacity = Math.max(0, this.maxConcurrentWorkers - this.running.size);
+    if (capacity > 0) {
+      const candidates = [...await this.options.tracker.fetchCandidateWorkItems()].sort(compareWorkItems);
+      let dispatched = 0;
+      for (const candidate of candidates) {
+        if (dispatched >= capacity) {
+          break;
+        }
+        const workItem = await this.revalidateForDispatch(candidate);
+        if (workItem === undefined) {
+          continue;
+        }
+        await this.dispatch(workItem);
+        dispatched += 1;
+      }
+    }
+
+    this.lastPollAt = nowIso();
+    this.nextPollAt = new Date(Date.now() + this.pollIntervalMs).toISOString();
+    this.status = "idle";
+    await this.flushSnapshot();
+    return this.snapshot();
+  }
+
+  async shutdown(): Promise<void> {
+    this.status = "offline";
+    this.nextPollAt = undefined;
+    await this.flushSnapshot();
+  }
 
   async runOnce(): Promise<RunOnceResult> {
     const workItem = this.options.workItemId === undefined
@@ -69,11 +155,123 @@ export class Orchestrator {
       return { run: idleRun, logger };
     }
 
-    const runId = createRunId();
-    const logger = new RunLogger(this.options.runsRootDir, runId, true);
-    const run = withOptional<RunRecord, "runtimeProvider", string>(
+    const run = this.createRunRecord(workItem);
+    const logger = new RunLogger(this.options.runsRootDir, run.runId, true);
+    await logger.init(run);
+    const result = await this.executeWorkItem({ workItem, run, logger });
+    return { run, result, workItem, logger };
+  }
+
+  private async dispatch(workItem: WorkItem): Promise<void> {
+    if (this.claimed.has(workItem.externalId) || this.running.has(workItem.externalId)) {
+      return;
+    }
+
+    const run = this.createRunRecord(workItem);
+    const logger = new RunLogger(this.options.runsRootDir, run.runId, true);
+    await logger.init(run);
+
+    const workerHeartbeat: WorkerHeartbeat = {
+      workerId: `${this.instanceId}:${run.runId}`,
+      ownerId: this.instanceId,
+      role: this.options.worker.name,
+      status: "running",
+      processId: this.processId,
+      host: this.host,
+      startedAt: nowIso(),
+      lastSeenAt: nowIso(),
+      currentIssueId: workItem.externalId,
+      currentIssueIdentifier: workItem.identifier,
+      currentRunId: run.runId,
+      details: {},
+    };
+
+    const entry: RunningEntry = {
+      workerHeartbeat,
+      workItem,
+      run,
+      logger,
+      promise: Promise.resolve(),
+      settled: false,
+    };
+
+    this.claimed.add(workItem.externalId);
+    this.running.set(workItem.externalId, entry);
+    await this.options.statusSink?.upsertWorker(workerHeartbeat);
+    await this.flushSnapshot();
+
+    entry.promise = this.executeTrackedEntry(entry);
+  }
+
+  private async executeTrackedEntry(entry: RunningEntry): Promise<void> {
+    try {
+      entry.result = await this.executeWorkItem({
+        workItem: entry.workItem,
+        run: entry.run,
+        logger: entry.logger,
+        heartbeat: async (details) => {
+          entry.workerHeartbeat = {
+            ...entry.workerHeartbeat,
+            lastSeenAt: nowIso(),
+            details: details === undefined ? entry.workerHeartbeat.details : { ...entry.workerHeartbeat.details, ...details },
+          };
+          await this.options.statusSink?.upsertWorker(entry.workerHeartbeat);
+          await this.flushSnapshot();
+        },
+      });
+    } catch (error) {
+      entry.error = error;
+    } finally {
+      entry.settled = true;
+      entry.workerHeartbeat = {
+        ...entry.workerHeartbeat,
+        lastSeenAt: nowIso(),
+      };
+      await this.options.statusSink?.upsertWorker(entry.workerHeartbeat);
+      await this.flushSnapshot();
+    }
+  }
+
+  private async reconcileRunningWorkers(): Promise<void> {
+    const settledEntries = [...this.running.values()].filter((entry) => entry.settled);
+    for (const entry of settledEntries) {
+      this.running.delete(entry.workItem.externalId);
+      this.claimed.delete(entry.workItem.externalId);
+      await this.options.statusSink?.deleteWorker(entry.workerHeartbeat.workerId);
+    }
+  }
+
+  private async revalidateForDispatch(candidate: WorkItem): Promise<WorkItem | undefined> {
+    if (this.claimed.has(candidate.externalId) || this.running.has(candidate.externalId)) {
+      return undefined;
+    }
+    const refreshed = await this.options.tracker.fetchWorkItemById(candidate.externalId);
+    if (refreshed === undefined) {
+      return undefined;
+    }
+    return ACTIVE_STATES.has(refreshed.state) ? refreshed : undefined;
+  }
+
+  private async selectCandidateWorkItem(): Promise<WorkItem | undefined> {
+    const candidates = [...await this.options.tracker.fetchCandidateWorkItems()].sort(compareWorkItems);
+    return candidates.find((item) => ACTIVE_STATES.has(item.state));
+  }
+
+  private async selectExplicitWorkItem(workItemId: string): Promise<WorkItem | undefined> {
+    const workItem = await this.options.tracker.fetchWorkItemById(workItemId);
+    if (workItem === undefined) {
+      throw new Error(`Work item not found: ${workItemId}`);
+    }
+    if (!ACTIVE_STATES.has(workItem.state)) {
+      throw new Error(`Work item ${workItem.identifier} is not runnable from state ${workItem.state}`);
+    }
+    return workItem;
+  }
+
+  private createRunRecord(workItem: WorkItem): RunRecord {
+    return withOptional<RunRecord, "runtimeProvider", string>(
       {
-        runId,
+        runId: createRunId(),
         workItemId: workItem.externalId,
         agentType: this.options.agentType ?? this.options.worker.name,
         status: "created",
@@ -84,20 +282,30 @@ export class Orchestrator {
       "runtimeProvider",
       this.options.runtimeProvider?.name,
     );
+  }
 
-    await logger.init(run);
+  private async executeWorkItem(input: {
+    workItem: WorkItem;
+    run: RunRecord;
+    logger: RunLogger;
+    heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
+  }): Promise<RunWorkerResult> {
+    const { workItem, run, logger, heartbeat } = input;
+
     await logger.emit("run.created", {
       identifier: workItem.identifier,
       title: workItem.title,
       state: workItem.state,
     });
+    await heartbeat?.({ phase: "created" });
 
     let workflowExecutor: WorkflowExecutor | undefined;
     if (this.options.runtimeProvider !== undefined) {
-      await this.options.runtimeProvider.prepare({ runId, workItem });
+      await this.options.runtimeProvider.prepare({ runId: run.runId, workItem });
       await this.options.runtimeProvider.start();
       await this.options.runtimeProvider.waitUntilReady();
       await logger.emit("runtime.ready", { provider: this.options.runtimeProvider.name });
+      await heartbeat?.({ phase: "runtime_ready" });
       if (this.options.workflow !== undefined) {
         if (this.options.repoRoot === undefined) {
           throw new Error("repoRoot is required when workflow is configured");
@@ -109,6 +317,7 @@ export class Orchestrator {
           logger,
         });
         await workflowExecutor.runPhase("prepare");
+        await heartbeat?.({ phase: "prepare_complete" });
       }
     }
 
@@ -116,14 +325,17 @@ export class Orchestrator {
     run.updatedAt = nowIso();
     await logger.writeStatus(run);
     await logger.emit("agent.turn.started", { worker: this.options.worker.name });
+    await heartbeat?.({ phase: "running" });
 
     let result: RunWorkerResult | undefined;
     let thrownError: unknown;
 
     try {
       const context = this.options.runtimeProvider === undefined
-        ? { workItem, run, logger }
-        : { workItem, run, logger, runtimeProvider: this.options.runtimeProvider };
+        ? (heartbeat === undefined ? { workItem, run, logger } : { workItem, run, logger, heartbeat })
+        : (heartbeat === undefined
+            ? { workItem, run, logger, runtimeProvider: this.options.runtimeProvider }
+            : { workItem, run, logger, runtimeProvider: this.options.runtimeProvider, heartbeat });
       result = await this.options.worker.execute(context);
       await workflowExecutor?.runPhase("validate");
       run.status = "completed";
@@ -134,13 +346,14 @@ export class Orchestrator {
       }
       await logger.emit("run.completed", { summary: result.summary });
       await logger.writeSummary({
-        runId,
+        runId: run.runId,
         workItem: workItem.identifier,
         status: run.status,
         summary: result.summary,
         transcriptPath: join(logger.artifacts.runDir, "transcript.md"),
       });
-      return { run, result, workItem, logger };
+      await heartbeat?.({ phase: "completed", summary: result.summary });
+      return result;
     } catch (error) {
       thrownError = error;
       run.status = "failed";
@@ -151,11 +364,12 @@ export class Orchestrator {
         stack: error instanceof Error ? error.stack : undefined,
       });
       await logger.writeSummary({
-        runId,
+        runId: run.runId,
         workItem: workItem.identifier,
         status: run.status,
         error: error instanceof Error ? error.message : String(error),
       });
+      await heartbeat?.({ phase: "failed", error: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally {
       if (workflowExecutor !== undefined) {
@@ -177,20 +391,22 @@ export class Orchestrator {
     }
   }
 
-  private async selectCandidateWorkItem(): Promise<WorkItem | undefined> {
-    const candidates = await this.options.tracker.fetchCandidateWorkItems();
-    return candidates.find((item) => DEFAULT_CANDIDATE_STATES.has(item.state));
+  private snapshot(): OrchestratorSnapshot {
+    return {
+      instanceId: this.instanceId,
+      startedAt: this.startedAt,
+      status: this.status,
+      pollIntervalMs: this.pollIntervalMs,
+      maxConcurrentWorkers: this.maxConcurrentWorkers,
+      ...(this.lastPollAt === undefined ? {} : { lastPollAt: this.lastPollAt }),
+      ...(this.nextPollAt === undefined ? {} : { nextPollAt: this.nextPollAt }),
+      claimedIssueIds: [...this.claimed],
+      runningWorkers: [...this.running.values()].map((entry) => entry.workerHeartbeat),
+    };
   }
 
-  private async selectExplicitWorkItem(workItemId: string): Promise<WorkItem | undefined> {
-    const workItem = await this.options.tracker.fetchWorkItemById(workItemId);
-    if (workItem === undefined) {
-      throw new Error(`Work item not found: ${workItemId}`);
-    }
-    if (!DEFAULT_CANDIDATE_STATES.has(workItem.state)) {
-      throw new Error(`Work item ${workItem.identifier} is not runnable from state ${workItem.state}`);
-    }
-    return workItem;
+  private async flushSnapshot(): Promise<void> {
+    await this.options.statusSink?.syncSnapshot(this.snapshot());
   }
 }
 
@@ -199,9 +415,32 @@ export class StubWorker implements RunWorker {
 
   async execute(context: RunWorkerContext): Promise<RunWorkerResult> {
     await context.logger.emit("worker.stub.executed", { identifier: context.workItem.identifier });
+    await context.heartbeat?.({ phase: "stub_executed", identifier: context.workItem.identifier });
     return {
       summary: `Stub worker handled ${context.workItem.identifier}`,
       output: `Stub worker handled ${context.workItem.identifier}`,
     };
   }
+}
+
+function compareWorkItems(left: WorkItem, right: WorkItem): number {
+  const leftPriority = priorityRank(left.metadata.priority);
+  const rightPriority = priorityRank(right.metadata.priority);
+  if (leftPriority !== rightPriority) {
+    return leftPriority - rightPriority;
+  }
+
+  const leftCreated = typeof left.metadata.createdAt === "string" ? left.metadata.createdAt : "9999";
+  const rightCreated = typeof right.metadata.createdAt === "string" ? right.metadata.createdAt : "9999";
+  return leftCreated.localeCompare(rightCreated);
+}
+
+function priorityRank(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return PRIORITY_RANKS[value] ?? 2;
+  }
+  return 2;
 }

@@ -1,19 +1,40 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, ArrowUpRight, GitBranch, LoaderCircle, MessageSquareMore, Plus, RefreshCcw, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  Bot,
+  GitBranch,
+  LoaderCircle,
+  MessageSquareMore,
+  Plus,
+  RefreshCcw,
+  Send,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CANONICAL_STATES, type CanonicalState } from "@piphony/core/types";
 import { AppShell } from "./shell";
-import type { CreateIssueInput, DashboardIssue, DashboardSnapshot, UpdateIssueInput } from "@/lib/models";
-import { appendIssueComment, createIssue, getDashboardSnapshot as getDashboardSnapshotServer, updateIssue } from "@/lib/server/functions";
+import type {
+  CreateIssueInput,
+  DashboardIssue,
+  DashboardRunSummary,
+  DashboardSnapshot,
+  DashboardWorkerStatus,
+  UpdateIssueInput,
+} from "@/lib/models";
+import {
+  appendIssueComment,
+  createIssue,
+  getDashboardSnapshot as getDashboardSnapshotServer,
+  updateIssue,
+} from "@/lib/server/functions";
 import { useLiveValue } from "@/lib/use-live-data";
 
 const STATE_LABELS: Record<CanonicalState, string> = {
-  todo: "Queued",
-  in_progress: "In motion",
-  agent_review: "Agent review",
-  human_review: "Human review",
+  backlog: "Backlog",
+  todo: "Todo",
+  in_progress: "In Progress",
+  human_review: "Human Review",
   rework: "Rework",
-  merging: "Merge queue",
+  merging: "Merging",
   done: "Done",
   cancelled: "Cancelled",
 };
@@ -28,10 +49,21 @@ export function BoardPage(props: {
     load: () => getDashboardSnapshotServer(),
     intervalMs: 3_500,
   });
-  const [composeOpen, setComposeOpen] = useState(false);
-  const [composeError, setComposeError] = useState<string | undefined>(undefined);
-  const issuesByState = useMemo(() => groupIssuesByState(dashboard.value.issues), [dashboard.value.issues]);
-  const selectedIssue = dashboard.value.issues.find((issue) => issue.id === props.selectedIssueId);
+  const selectedIssue = dashboard.value.issues.find(
+    (issue) => issue.id === props.selectedIssueId,
+  );
+  const issuesByState = useMemo(
+    () => groupIssuesByState(dashboard.value.issues),
+    [dashboard.value.issues],
+  );
+  const [composeError, setComposeError] = useState<string | undefined>();
+  const [activeTab, setActiveTab] = useState<"global" | "create" | "details" | "steering">(
+    selectedIssue === undefined ? "global" : "details",
+  );
+
+  useEffect(() => {
+    setActiveTab(selectedIssue === undefined ? "global" : "details");
+  }, [selectedIssue?.id]);
 
   const handleSelectIssue = async (issueId?: string) => {
     await navigate({
@@ -50,9 +82,11 @@ export function BoardPage(props: {
       setComposeError(undefined);
       const next = await createIssue({ data: input });
       dashboard.setValue(next);
-      setComposeOpen(false);
+      setActiveTab("global");
     } catch (caught: unknown) {
-      setComposeError(caught instanceof Error ? caught.message : String(caught));
+      setComposeError(
+        caught instanceof Error ? caught.message : String(caught),
+      );
     }
   };
 
@@ -60,92 +94,123 @@ export function BoardPage(props: {
     <AppShell
       stats={dashboard.value.stats}
       masthead={
-        <section className="masthead-grid">
-          <div className="shell-card compose-panel">
-            <div>
-              <p className="eyebrow">Dispatch intake</p>
-              <h3>Open a new work item without leaving the board.</h3>
-            </div>
-            <button
-              className="action-button"
-              type="button"
-              onClick={() => setComposeOpen((value) => !value)}
-              data-testid="toggle-create-issue"
-            >
-              <Plus size={16} />
-              {composeOpen ? "Close composer" : "New issue"}
-            </button>
-            {composeOpen ? (
-              <IssueComposer onSubmit={handleCreateIssue} error={composeError} />
+        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+          <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            {dashboard.value.issues.length} issues
+          </span>
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={() => void dashboard.refresh()}
+          >
+            {dashboard.isRefreshing ? (
+              <LoaderCircle size={12} className="spin" />
             ) : (
-              <p className="support-copy">
-                Issue IDs can be auto-generated, labels accept comma-separated tags, and PR metadata can be attached when you already know the delivery lane.
-              </p>
+              <RefreshCcw size={12} />
             )}
-          </div>
-          <div className="shell-card telemetry-banner">
-            <div>
-              <p className="eyebrow">Live telemetry</p>
-              <h3>Recent autonomous motion</h3>
-            </div>
-            <button className="ghost-button" type="button" onClick={() => void dashboard.refresh()}>
-              {dashboard.isRefreshing ? <LoaderCircle size={16} className="spin" /> : <RefreshCcw size={16} />}
-              Refresh
-            </button>
-            <div className="run-pills">
-              {dashboard.value.recentRuns.slice(0, 4).map((run) => (
-                <Link key={run.runId} to="/runs" search={{ runId: run.runId }} className={`run-pill is-${run.status}`}>
-                  <span>{run.status.replace("_", " ")}</span>
-                  <strong>{run.workItemIdentifier ?? run.runId.slice(0, 8)}</strong>
-                </Link>
-              ))}
-            </div>
-            <p className="support-copy">Use the Runs view for transcripts, event streams, validation traces, and runtime/provider context.</p>
-          </div>
-        </section>
+            Sync
+          </button>
+        </div>
       }
     >
-      <div className="workspace-grid">
-        <section className="shell-card board-surface">
-          <div className="section-header">
-            <div>
-              <p className="eyebrow">Issue board</p>
-              <h3>Every canonical state, visible at once.</h3>
-            </div>
-            <span className="live-caption">{dashboard.value.issues.length} tracked issues</span>
-          </div>
-          <div className="board-columns" data-testid="board-columns">
-            {CANONICAL_STATES.map((state) => (
-              <BoardColumn
-                key={state}
-                state={state}
-                issues={issuesByState[state] ?? []}
-                selectedIssueId={selectedIssue?.id}
-                onSelectIssue={handleSelectIssue}
-              />
-            ))}
-          </div>
-        </section>
-
-        <aside className="shell-card inspector-surface">
-          {selectedIssue === undefined ? (
-            <EmptyInspector recentRuns={dashboard.value.recentRuns} error={dashboard.error} />
-          ) : (
-            <IssueInspector
-              issue={selectedIssue}
-              onClose={() => void handleSelectIssue(undefined)}
-              onSave={async (input) => {
-                const next = await updateIssue({ data: input });
-                dashboard.setValue(next);
-              }}
-              onComment={async (body) => {
-                const next = await appendIssueComment({ data: { id: selectedIssue.id, body, author: "human" } });
-                dashboard.setValue(next);
-              }}
+      <section className="board-surface">
+        <div className="board-columns" data-testid="board-columns">
+          {CANONICAL_STATES.map((state) => (
+            <BoardColumn
+              key={state}
+              state={state}
+              issues={issuesByState[state] ?? []}
+              selectedIssueId={selectedIssue?.id}
+              onSelectIssue={handleSelectIssue}
             />
-          )}
-        </aside>
-      </div>
+          ))}
+        </div>
+      </section>
+
+      <aside className="sidebar">
+        {selectedIssue === undefined ? (
+          <>
+            <div className="sidebar-tabs">
+              <button
+                className={`sidebar-tab ${activeTab === "global" ? "is-active" : ""}`}
+                onClick={() => setActiveTab("global")}
+              >
+                Global Observability
+              </button>
+              <button
+                className={`sidebar-tab ${activeTab === "create" ? "is-active" : ""}`}
+                onClick={() => setActiveTab("create")}
+                data-testid="toggle-create-issue"
+              >
+                New Issue
+              </button>
+            </div>
+
+            {activeTab === "create" ? (
+              <div className="sidebar-content">
+                <div className="panel">
+                  <IssueComposer
+                    onSubmit={handleCreateIssue}
+                    error={composeError}
+                  />
+                </div>
+                <div className="panel" style={{ flexGrow: 1, borderBottom: "none" }}>
+                  <div className="eyebrow">Tracker workflow</div>
+                  <p className="support-copy">
+                    New issues start in <strong>Backlog</strong>. Move them into
+                    <strong> Todo</strong> or <strong>Rework</strong> when you want the
+                    separate orchestrator process to claim them.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <ObservabilityPanel
+                workers={dashboard.value.workers}
+                recentRuns={dashboard.value.recentRuns}
+                error={dashboard.error}
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <div className="sidebar-tabs">
+              <button
+                className={`sidebar-tab ${activeTab === "details" ? "is-active" : ""}`}
+                onClick={() => setActiveTab("details")}
+              >
+                Issue Details
+              </button>
+              <button
+                className={`sidebar-tab ${activeTab === "steering" ? "is-active" : ""}`}
+                onClick={() => setActiveTab("steering")}
+              >
+                Agent Steering
+              </button>
+            </div>
+
+            {activeTab === "steering" ? (
+              <IssueSteering issue={selectedIssue} />
+            ) : (
+              <div className="sidebar-content">
+                <IssueInspector
+                  issue={selectedIssue}
+                  onClose={() => void handleSelectIssue(undefined)}
+                  onSave={async (input) => {
+                    const next = await updateIssue({ data: input });
+                    dashboard.setValue(next);
+                  }}
+                  onComment={async (body) => {
+                    const next = await appendIssueComment({
+                      data: { id: selectedIssue.id, body, author: "human" },
+                    });
+                    dashboard.setValue(next);
+                  }}
+                />
+              </div>
+            )}
+          </>
+        )}
+      </aside>
     </AppShell>
   );
 }
@@ -159,14 +224,13 @@ function BoardColumn(props: {
   return (
     <section className="board-column">
       <header>
-        <div>
-          <p>{STATE_LABELS[props.state]}</p>
-          <strong>{props.issues.length}</strong>
-        </div>
-        <span className={`state-dot is-${props.state}`} />
+        {STATE_LABELS[props.state]}
+        <span>{props.issues.length}</span>
       </header>
       <div className="issue-stack">
-        {props.issues.length === 0 ? <div className="issue-empty">No issues in this lane.</div> : null}
+        {props.issues.length === 0 ? (
+          <div className="issue-empty">Empty</div>
+        ) : null}
         {props.issues.map((issue) => (
           <button
             key={issue.id}
@@ -177,18 +241,41 @@ function BoardColumn(props: {
           >
             <div className="issue-card-topline">
               <span className="issue-identifier">{issue.identifier}</span>
-              {issue.priority ? <span className={`priority-pill is-${issue.priority}`}>{issue.priority}</span> : null}
+              {issue.priority ? (
+                <span className="priority-icon" title={issue.priority}>
+                  ●
+                </span>
+              ) : null}
             </div>
             <h4>{issue.title}</h4>
-            {issue.description ? <p>{issue.description}</p> : <p className="muted-copy">No brief yet.</p>}
-            <div className="tag-row">
-              {issue.labels.slice(0, 3).map((label) => (
-                <span key={label} className="tag-pill">{label}</span>
-              ))}
-            </div>
-            <div className="issue-card-footer">
-              <span>{issue.assignee ?? "unassigned"}</span>
-              {issue.latestRun ? <span className={`mini-run is-${issue.latestRun.status}`}>{issue.latestRun.status}</span> : null}
+
+            {issue.state === "in_progress" ? (
+              <div className="agent-activity-bar">
+                <div className="agent-pulse" />
+                Impl Agent: working...
+              </div>
+            ) : null}
+
+            {issue.state === "human_review" ? (
+              <div className="agent-activity-bar is-warning">
+                <AlertTriangle size={10} />
+                Human Review Required
+              </div>
+            ) : null}
+
+            <div className="issue-card-footer" style={{ marginTop: "4px" }}>
+              <div className="tag-row">
+                {issue.labels.slice(0, 2).map((label) => (
+                  <span key={label} className="tag-pill">
+                    {label}
+                  </span>
+                ))}
+              </div>
+              {issue.assignee ? (
+                <span>{issue.assignee[0]?.toUpperCase()}</span>
+              ) : (
+                <span>Unassigned</span>
+              )}
             </div>
           </button>
         ))}
@@ -197,41 +284,203 @@ function BoardColumn(props: {
   );
 }
 
-function EmptyInspector(props: { recentRuns: DashboardSnapshot["recentRuns"]; error?: string | undefined }) {
+function ObservabilityPanel(props: {
+  workers: DashboardWorkerStatus[];
+  recentRuns: DashboardRunSummary[];
+  error?: string | undefined;
+}) {
+  const [input, setInput] = useState("");
+  const activeWorkers = props.workers.filter(
+    (worker) => worker.status === "running" || worker.status === "polling",
+  ).length;
+
   return (
-    <div className="empty-inspector">
-      <div className="empty-badge">
-        <Sparkles size={18} />
-        Ready for dispatch
-      </div>
-      <h3>Select an issue card to inspect fields, comments, PR metadata, and linked runs.</h3>
-      <p>
-        This panel is tuned for operator work: edit the issue, attach branch/PR context, and audit what the automation actually did.
-      </p>
-      {props.error ? (
-        <div className="warning-card">
-          <AlertTriangle size={16} />
-          <div>
-            <strong>Refresh warning</strong>
-            <p>{props.error}</p>
+    <div className="agent-console">
+      <div className="console-messages">
+        <div className="chat-msg agent">
+          <div className="sender">
+            <Bot size={12} /> Chief Agent
+          </div>
+          <div className="bubble">
+            Systems nominal. {activeWorkers} active agents in the swarm. What
+            would you like to check on?
           </div>
         </div>
-      ) : null}
-      <div className="mini-run-list">
-        {props.recentRuns.slice(0, 5).map((run) => (
-          <div key={run.runId} className="mini-run-card">
-            <span className={`mini-run is-${run.status}`}>{run.status}</span>
-            <strong>{run.workItemIdentifier ?? run.runId.slice(0, 10)}</strong>
-            <p>{run.summary ?? run.transcriptPreview ?? "Awaiting summary"}</p>
+        <div className="chat-msg human">
+          <div className="bubble">
+            What is the status of the tracker-driven workflow smoke?
           </div>
-        ))}
+        </div>
+        <div className="chat-msg agent">
+          <div className="sender">
+            <Bot size={12} /> Chief Agent
+          </div>
+          <div className="bubble">
+            Create or select an issue, move it from <strong>Backlog</strong> to
+            <strong> Todo</strong>, and the separate orchestrator will claim it.
+            The implementation agent will append <strong>Plan</strong>,
+            <strong> Progress</strong>, and <strong>Review handoff</strong>
+            comments before transitioning the issue to
+            <strong> Human Review</strong>.
+          </div>
+        </div>
+
+        <div className="panel panel-embedded">
+          <div className="eyebrow">Worker status</div>
+          <div className="worker-list" data-testid="worker-status-panel">
+            {props.workers.length === 0 ? (
+              <div className="issue-empty">No orchestrator heartbeat yet.</div>
+            ) : (
+              props.workers.slice(0, 4).map((worker) => (
+                <article
+                  key={worker.workerId}
+                  className="worker-card"
+                  data-testid={`worker-card-${worker.role}-${worker.workerId}`}
+                >
+                  <div className="worker-card-topline">
+                    <strong>{worker.role}</strong>
+                    <span className={`mini-run is-${worker.status}`}>
+                      {worker.status}
+                    </span>
+                  </div>
+                  <p>
+                    {worker.currentIssueIdentifier ??
+                      `${worker.host} · pid ${worker.processId}`}
+                  </p>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="panel panel-embedded">
+          <div className="eyebrow">Recent Runs</div>
+          <div className="run-list compact-run-list">
+            {props.recentRuns.slice(0, 5).map((run) => (
+              <Link
+                key={run.runId}
+                to="/runs"
+                search={{ runId: run.runId }}
+                className="run-item"
+              >
+                <span>{run.workItemIdentifier ?? run.runId.slice(0, 8)}</span>
+                <span className="run-status">{run.status.replace("_", " ")}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        {props.error ? (
+          <div className="chat-msg agent">
+            <div className="sender">
+              <Bot size={12} /> Chief Agent
+            </div>
+            <div className="bubble">Refresh warning: {props.error}</div>
+          </div>
+        ) : null}
       </div>
+
+      <form
+        className="console-input-area"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setInput("");
+        }}
+      >
+        <textarea
+          placeholder="Ask the swarm..."
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              setInput("");
+            }
+          }}
+        />
+        <button type="submit" className="console-send" disabled={!input.trim()}>
+          <Send size={16} />
+        </button>
+      </form>
     </div>
   );
 }
 
-function IssueComposer(props: { onSubmit: (input: CreateIssueInput) => Promise<void>; error?: string | undefined }) {
-  const [form, setForm] = useState<CreateIssueInput>({ title: "", priority: "medium" });
+function IssueSteering(props: { issue: DashboardIssue }) {
+  const [input, setInput] = useState("");
+
+  return (
+    <div className="agent-console">
+      <div className="console-messages">
+        <div className="chat-msg agent">
+          <div className="sender">
+            <Bot size={12} /> Chief Agent
+          </div>
+          <div className="bubble">
+            Connecting to implementation context for {props.issue.identifier}...
+          </div>
+        </div>
+        <div className="chat-msg agent">
+          <div className="sender">
+            <Bot size={12} /> Impl Agent
+          </div>
+          <div className="bubble">
+            This panel is advisory only. Tracker fields, comments, and workflow
+            transitions remain the source of truth for orchestration.
+          </div>
+        </div>
+        <div className="chat-msg human">
+          <div className="bubble">
+            Move the issue to Todo or Rework when you want it picked up.
+          </div>
+        </div>
+        <div className="chat-msg agent">
+          <div className="sender">
+            <Bot size={12} /> Impl Agent
+          </div>
+          <div className="bubble">
+            Understood. Once runnable, I will transition to
+            <code> in_progress</code>, leave <strong>Plan</strong>,
+            <strong> Progress</strong>, and <strong>Review handoff</strong>
+            comments, then hand back in <code>human_review</code>.
+          </div>
+        </div>
+      </div>
+
+      <form
+        className="console-input-area"
+        onSubmit={(event) => {
+          event.preventDefault();
+          setInput("");
+        }}
+      >
+        <textarea
+          placeholder={`Steer agent on ${props.issue.identifier}...`}
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              setInput("");
+            }
+          }}
+        />
+        <button type="submit" className="console-send" disabled={!input.trim()}>
+          <Send size={16} />
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function IssueComposer(props: {
+  onSubmit: (input: CreateIssueInput) => Promise<void>;
+  error?: string | undefined;
+}) {
+  const [form, setForm] = useState<CreateIssueInput>({
+    title: "",
+    priority: "medium",
+  });
   const [submitting, setSubmitting] = useState(false);
 
   return (
@@ -240,91 +489,105 @@ function IssueComposer(props: { onSubmit: (input: CreateIssueInput) => Promise<v
       onSubmit={(event) => {
         event.preventDefault();
         setSubmitting(true);
-        void props.onSubmit(form).finally(() => setSubmitting(false));
+        void props
+          .onSubmit(form)
+          .then(() =>
+            setForm({
+              title: "",
+              priority: "medium",
+              description: "",
+              labels: "",
+              assignee: "",
+              identifier: "",
+              branchName: "",
+              prUrl: "",
+            }),
+          )
+          .finally(() => setSubmitting(false));
       }}
       data-testid="create-issue-form"
     >
       <label>
-        <span>Identifier</span>
+        Identifier
         <input
           value={form.identifier ?? ""}
-          onChange={(event) => setForm((current) => ({ ...current, identifier: event.target.value }))}
+          onChange={(event) =>
+            setForm((current) => ({ ...current, identifier: event.target.value }))
+          }
           placeholder="Leave blank to auto-generate"
           data-testid="create-issue-identifier"
         />
       </label>
       <label>
-        <span>Title</span>
+        Title
         <input
           required
           value={form.title}
-          onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
-          placeholder="Ship a hosted-safe workflow refactor"
+          onChange={(event) =>
+            setForm((current) => ({ ...current, title: event.target.value }))
+          }
+          placeholder="Issue title"
           data-testid="create-issue-title"
         />
       </label>
       <label>
-        <span>Description</span>
+        Description
         <textarea
-          rows={4}
+          rows={3}
           value={form.description ?? ""}
-          onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
-          placeholder="Why this matters, acceptance criteria, and the key delivery notes."
+          onChange={(event) =>
+            setForm((current) => ({ ...current, description: event.target.value }))
+          }
+          placeholder="Add description..."
           data-testid="create-issue-description"
         />
       </label>
-      <div className="form-row two-up">
+      <div className="form-row">
         <label>
-          <span>Labels</span>
-          <input
-            value={form.labels ?? ""}
-            onChange={(event) => setForm((current) => ({ ...current, labels: event.target.value }))}
-            placeholder="ui, local-tracker"
-          />
-        </label>
-        <label>
-          <span>Assignee</span>
-          <input
-            value={form.assignee ?? ""}
-            onChange={(event) => setForm((current) => ({ ...current, assignee: event.target.value }))}
-            placeholder="nisar"
-          />
-        </label>
-      </div>
-      <div className="form-row three-up">
-        <label>
-          <span>Priority</span>
+          Priority
           <select
             value={form.priority ?? "medium"}
-            onChange={(event) => setForm((current) => ({ ...current, priority: event.target.value as CreateIssueInput["priority"] }))}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                priority: event.target.value as CreateIssueInput["priority"],
+              }))
+            }
           >
-            <option value="critical">critical</option>
-            <option value="high">high</option>
-            <option value="medium">medium</option>
-            <option value="low">low</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
           </select>
         </label>
         <label>
-          <span>Branch</span>
+          Assignee
           <input
-            value={form.branchName ?? ""}
-            onChange={(event) => setForm((current) => ({ ...current, branchName: event.target.value }))}
-            placeholder="PIPHONY-102"
-          />
-        </label>
-        <label>
-          <span>PR URL</span>
-          <input
-            value={form.prUrl ?? ""}
-            onChange={(event) => setForm((current) => ({ ...current, prUrl: event.target.value }))}
-            placeholder="https://github.com/..."
+            value={form.assignee ?? ""}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, assignee: event.target.value }))
+            }
+            placeholder="Name"
           />
         </label>
       </div>
-      {props.error ? <p className="form-error">{props.error}</p> : null}
-      <button className="action-button" type="submit" disabled={submitting} data-testid="submit-create-issue">
-        {submitting ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />}
-        Create issue
+      {props.error ? (
+        <p style={{ color: "var(--failed)", fontSize: "13px" }}>
+          {props.error}
+        </p>
+      ) : null}
+      <button
+        className="action-button"
+        type="submit"
+        disabled={submitting}
+        data-testid="submit-create-issue"
+      >
+        {submitting ? (
+          <LoaderCircle size={14} className="spin" />
+        ) : (
+          <Plus size={14} />
+        )}
+        Create Issue
       </button>
     </form>
   );
@@ -336,7 +599,9 @@ function IssueInspector(props: {
   onSave: (input: UpdateIssueInput) => Promise<void>;
   onComment: (body: string) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState<UpdateIssueInput>(() => toDraft(props.issue));
+  const [draft, setDraft] = useState<UpdateIssueInput>(() =>
+    toDraft(props.issue),
+  );
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [commenting, setCommenting] = useState(false);
@@ -347,135 +612,221 @@ function IssueInspector(props: {
   }, [props.issue]);
 
   return (
-    <div className="issue-inspector" data-testid="issue-inspector">
-      <div className="inspector-header">
-        <div>
-          <p className="eyebrow">Selected issue</p>
-          <h3>{props.issue.identifier}</h3>
+    <>
+      <div className="panel" style={{ paddingBottom: "16px" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "16px",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "16px",
+              fontWeight: 600,
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {props.issue.identifier}
+          </span>
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={props.onClose}
+            style={{ padding: "4px 8px" }}
+          >
+            Close
+          </button>
         </div>
-        <button className="ghost-button" type="button" onClick={props.onClose}>
-          Close
-        </button>
-      </div>
 
-      <form
-        className="issue-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setSaving(true);
-          void props.onSave(draft).finally(() => setSaving(false));
-        }}
-      >
-        <label>
-          <span>Title</span>
-          <input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
-        </label>
-        <label>
-          <span>Description</span>
-          <textarea rows={5} value={draft.description ?? ""} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} />
-        </label>
-        <div className="form-row two-up">
+        <form
+          className="issue-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setSaving(true);
+            void props.onSave(draft).finally(() => setSaving(false));
+          }}
+        >
           <label>
-            <span>State</span>
-            <select value={draft.state} onChange={(event) => setDraft((current) => ({ ...current, state: event.target.value as CanonicalState }))}>
-              {CANONICAL_STATES.map((state) => (
-                <option key={state} value={state}>{STATE_LABELS[state]}</option>
-              ))}
-            </select>
+            Title
+            <input
+              value={draft.title}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  title: event.target.value,
+                }))
+              }
+            />
           </label>
           <label>
-            <span>Priority</span>
-            <select value={draft.priority ?? "medium"} onChange={(event) => setDraft((current) => ({ ...current, priority: event.target.value as UpdateIssueInput["priority"] }))}>
-              <option value="critical">critical</option>
-              <option value="high">high</option>
-              <option value="medium">medium</option>
-              <option value="low">low</option>
-            </select>
+            Description
+            <textarea
+              rows={4}
+              value={draft.description ?? ""}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  description: event.target.value,
+                }))
+              }
+            />
           </label>
-        </div>
-        <div className="form-row two-up">
-          <label>
-            <span>Assignee</span>
-            <input value={draft.assignee ?? ""} onChange={(event) => setDraft((current) => ({ ...current, assignee: event.target.value }))} />
-          </label>
-          <label>
-            <span>Labels</span>
-            <input value={draft.labels ?? ""} onChange={(event) => setDraft((current) => ({ ...current, labels: event.target.value }))} />
-          </label>
-        </div>
-        <div className="form-row two-up">
-          <label>
-            <span>Branch</span>
-            <input value={draft.branchName ?? ""} onChange={(event) => setDraft((current) => ({ ...current, branchName: event.target.value }))} />
-          </label>
-          <label>
-            <span>PR URL</span>
-            <input value={draft.prUrl ?? ""} onChange={(event) => setDraft((current) => ({ ...current, prUrl: event.target.value }))} />
-          </label>
-        </div>
-        <button className="action-button" type="submit" disabled={saving}>
-          {saving ? <LoaderCircle size={16} className="spin" /> : <RefreshCcw size={16} />}
-          Save issue
-        </button>
-      </form>
+          <div className="form-row">
+            <label>
+              Status
+              <select
+                value={draft.state}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    state: event.target.value as CanonicalState,
+                  }))
+                }
+                data-testid="issue-state-select"
+              >
+                {CANONICAL_STATES.map((state) => (
+                  <option key={state} value={state}>
+                    {STATE_LABELS[state]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Priority
+              <select
+                value={draft.priority ?? "medium"}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    priority: event.target
+                      .value as UpdateIssueInput["priority"],
+                  }))
+                }
+              >
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </label>
+          </div>
+          <div className="form-row">
+            <label>
+              Assignee
+              <input
+                value={draft.assignee ?? ""}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    assignee: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Labels
+              <input
+                value={draft.labels ?? ""}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    labels: event.target.value,
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <label>
+              Branch
+              <input
+                value={draft.branchName ?? ""}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    branchName: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              PR URL
+              <input
+                value={draft.prUrl ?? ""}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    prUrl: event.target.value,
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <button
+            className="ghost-button"
+            type="submit"
+            disabled={saving}
+            style={{ justifyContent: "center" }}
+            data-testid="save-issue"
+          >
+            {saving ? (
+              <LoaderCircle size={14} className="spin" />
+            ) : (
+              "Save Changes"
+            )}
+          </button>
+        </form>
 
-      <div className="metadata-grid">
-        <Stat label="created" value={props.issue.createdAt} />
-        <Stat label="updated" value={props.issue.updatedAt} />
-        <Stat label="comments" value={String(props.issue.comments.length)} />
-        <Stat label="artifacts" value={String(props.issue.artifacts.length)} />
-      </div>
+        <div className="metadata-grid" style={{ marginTop: "20px" }}>
+          <div className="stat-pill">
+            <span>Created</span>
+            <strong>{props.issue.createdAt.slice(0, 10)}</strong>
+          </div>
+          <div className="stat-pill">
+            <span>Updated</span>
+            <strong>{props.issue.updatedAt.slice(0, 10)}</strong>
+          </div>
+        </div>
 
-      <div className="link-strip">
-        {props.issue.branchName ? (
-          <span className="inline-chip"><GitBranch size={14} /> {props.issue.branchName}</span>
-        ) : null}
-        {props.issue.prUrl ? (
-          <a href={props.issue.prUrl} target="_blank" rel="noreferrer" className="inline-chip accent-link" data-testid="issue-pr-link">
-            PR link
-            <ArrowUpRight size={14} />
+        <div className="panel-embedded">
+          <div className="eyebrow">Tracker workflow</div>
+          <p className="support-copy">
+            This UI only edits tracker state. Move the issue into <strong>Todo</strong>
+            or <strong>Rework</strong> when you want the poller to claim it.
+          </p>
+        </div>
+
+        {props.issue.prUrl && (
+          <a
+            href={props.issue.prUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ghost-button"
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              gap: "6px",
+              marginTop: "16px",
+            }}
+            data-testid="issue-pr-link"
+          >
+            <GitBranch size={14} /> Open Pull Request
           </a>
-        ) : null}
+        )}
       </div>
 
-      <div className="run-action-row shell-inset">
-        <p className="eyebrow">Tracker workflow</p>
-        <p className="support-copy">
-          This UI behaves like Jira/Linear: create issues, edit fields, and transition workflow states. The separate pull-based orchestrator process polls runnable issues from the tracker and the agent updates progress/comments while it works.
-        </p>
-        <p className="support-copy">
-          To dispatch work, move an issue into <strong>todo</strong> or <strong>rework</strong>. The orchestrator will claim it and the agent will transition it to <strong>in_progress</strong> as part of execution. For local dev, run <code>npm run orchestrator:watch</code> alongside this UI.
-        </p>
-      </div>
-
-      {props.issue.latestRun ? (
-        <div className="linked-run shell-inset">
-          <div className="linked-run-header">
-            <p className="eyebrow">Linked run</p>
-            <Link to="/runs" search={{ runId: props.issue.latestRun.runId }} className="ghost-button subtle-link">
-              Open run
-            </Link>
-          </div>
-          <span className={`mini-run is-${props.issue.latestRun.status}`}>{props.issue.latestRun.status}</span>
-          <strong>{props.issue.latestRun.runId}</strong>
-          <p>{props.issue.latestRun.summary ?? props.issue.latestRun.transcriptPreview ?? "Awaiting summary"}</p>
-        </div>
-      ) : null}
-
-      <section className="comments-section">
-        <div className="section-header compact">
-          <div>
-            <p className="eyebrow">Comment stream</p>
-            <h4>Human notes + agent handoff</h4>
-          </div>
-        </div>
+      <div className="panel" style={{ flexGrow: 1, borderBottom: "none" }}>
+        <div className="eyebrow">Activity & Notes</div>
         <div className="comment-list">
           {props.issue.comments.map((commentItem) => (
             <article key={commentItem.id} className="comment-card">
-              <div>
+              <header>
                 <strong>{commentItem.author}</strong>
-                <span>{commentItem.createdAt}</span>
-              </div>
+                <span>{commentItem.createdAt.slice(0, 10)}</span>
+              </header>
               <p>{commentItem.body}</p>
             </article>
           ))}
@@ -485,53 +836,67 @@ function IssueInspector(props: {
           onSubmit={(event) => {
             event.preventDefault();
             setCommenting(true);
-            void props.onComment(comment).then(() => setComment("")).finally(() => setCommenting(false));
+            void props
+              .onComment(comment)
+              .then(() => setComment(""))
+              .finally(() => setCommenting(false));
           }}
         >
           <label>
-            <span>New comment</span>
-            <textarea rows={3} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Record a review note, decision, or next instruction." />
+            <textarea
+              rows={2}
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              placeholder="Leave a manual note..."
+            />
           </label>
-          <button className="action-button" type="submit" disabled={commenting || comment.trim() === ""}>
-            {commenting ? <LoaderCircle size={16} className="spin" /> : <MessageSquareMore size={16} />}
-            Add comment
+          <button
+            className="ghost-button"
+            type="submit"
+            disabled={commenting || comment.trim() === ""}
+            style={{ justifyContent: "center" }}
+          >
+            {commenting ? (
+              <LoaderCircle size={14} className="spin" />
+            ) : (
+              <MessageSquareMore size={14} />
+            )}
+            Add Note
           </button>
         </form>
-      </section>
-    </div>
+      </div>
+    </>
   );
 }
 
-function Stat(props: { label: string; value: string }) {
-  return (
-    <div className="stat-pill">
-      <span>{props.label}</span>
-      <strong>{props.value}</strong>
-    </div>
+function groupIssuesByState(
+  issues: DashboardIssue[],
+): Record<CanonicalState, DashboardIssue[]> {
+  return issues.reduce<Record<CanonicalState, DashboardIssue[]>>(
+    (accumulator, issue) => {
+      accumulator[issue.state].push(issue);
+      return accumulator;
+    },
+    {
+      backlog: [],
+      todo: [],
+      in_progress: [],
+      human_review: [],
+      rework: [],
+      merging: [],
+      done: [],
+      cancelled: [],
+    },
   );
-}
-
-function groupIssuesByState(issues: DashboardIssue[]): Record<CanonicalState, DashboardIssue[]> {
-  return issues.reduce<Record<CanonicalState, DashboardIssue[]>>((accumulator, issue) => {
-    accumulator[issue.state].push(issue);
-    return accumulator;
-  }, {
-    todo: [],
-    in_progress: [],
-    agent_review: [],
-    human_review: [],
-    rework: [],
-    merging: [],
-    done: [],
-    cancelled: [],
-  });
 }
 
 function toDraft(issue: DashboardIssue): UpdateIssueInput {
   return {
     id: issue.id,
     title: issue.title,
-    ...(issue.description === undefined ? {} : { description: issue.description }),
+    ...(issue.description === undefined
+      ? {}
+      : { description: issue.description }),
     state: issue.state,
     labels: issue.labels.join(", "),
     ...(issue.assignee === undefined ? {} : { assignee: issue.assignee }),

@@ -16,7 +16,7 @@ class PiWorker implements RunWorker {
       agentType: "implementation",
       tracker: adapter,
       workItem: context.workItem,
-      prompt: `Use tracker_get_issue on ${context.workItem.identifier}. Then add a comment saying \"local smoke ok\". Then transition the issue to agent_review. Finally reply with a one sentence summary.`,
+      prompt: `Use tracker_get_issue on ${context.workItem.identifier}. Then add a comment saying \"local smoke ok\". Then transition the issue to human_review. Finally reply with a one sentence summary.`,
       onTrackerEvent: async (event) => {
         await context.logger.emit(event.event, event.details);
       },
@@ -37,6 +37,6 @@ const orchestrator = new Orchestrator({
 });
 const result = await orchestrator.runOnce();
 const issue = await adapter.inspectIssue("LOCAL-301");
-if (issue.state !== "agent_review") throw new Error(`Expected agent_review, got ${issue.state}`);
+if (issue.state !== "human_review") throw new Error(`Expected human_review, got ${issue.state}`);
 if (!issue.comments.some((comment) => comment.body.includes("local smoke ok"))) throw new Error("Expected smoke comment to be appended");
 console.log(JSON.stringify({ ok: true, runId: result.run.runId, issueState: issue.state, comments: issue.comments.length }, null, 2));

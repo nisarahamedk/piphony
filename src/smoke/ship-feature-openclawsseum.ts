@@ -74,7 +74,7 @@ class FeatureShippingWorker implements RunWorker {
       `Likely files: apps/web/src/features/marketing/marketing-shell.tsx and apps/web/src/routes plus apps/web/src/features/marketing pages.`,
       `Validate in runtime with curl -sf http://web:3010/terms and curl -sf http://web:3010/privacy.`,
       `Then use github_cli to commit, push, and open/update a draft PR.`,
-      `Then append a tracker comment with the PR URL and transition the issue to agent_review.`,
+      `Then append a tracker comment with the PR URL and transition the issue to human_review.`,
       `Reply with the PR URL and one sentence about what shipped.`,
     ].join("\n");
 
@@ -131,8 +131,8 @@ const orchestrator = new Orchestrator({
 
 const result = await orchestrator.runOnce();
 const finalIssue = await adapter.inspectIssue(issue.id);
-if (finalIssue.state !== "agent_review") {
-  throw new Error(`Expected issue to reach agent_review, got ${finalIssue.state}`);
+if (finalIssue.state !== "human_review") {
+  throw new Error(`Expected issue to reach human_review, got ${finalIssue.state}`);
 }
 const events = await result.logger.readEvents();
 if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "prepare")) {

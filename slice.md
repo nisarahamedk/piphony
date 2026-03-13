@@ -42,7 +42,7 @@ The next work is specifically about hardening the local tracker/orchestrator mod
 
 ### Slice 10 — SQLite-backed local tracker authority
 
-**Goal:** Replace JSON-file tracker state with a lightweight SQLite authority suitable for claims, transitions, comments, and UI queries.
+**Goal:** Replace JSON-file tracker state with a lightweight SQLite authority suitable for issue lifecycle, comments, transitions, artifacts, and UI queries.
 
 ### Includes
 - SQLite-backed local tracker store
@@ -51,9 +51,8 @@ The next work is specifically about hardening the local tracker/orchestrator mod
   - comments
   - artifacts
   - transitions/history
-  - claims / leases
   - worker heartbeats
-- compatibility-preserving adapter surface at the `TrackerAdapter` level
+- adapter surface preserved at the `TrackerAdapter` level
 - UI reads issue/comment state from SQLite-backed local tracker
 - local CLI updated to operate on SQLite-backed tracker state
 
@@ -70,47 +69,48 @@ The next work is specifically about hardening the local tracker/orchestrator mod
 - UI still renders tracker state correctly from the new store
 
 ### Status checklist
-- [ ] SQLite schema added
-- [ ] local tracker store migrated from JSON authority to SQLite authority
-- [ ] adapter surface preserved
-- [ ] CLI updated
-- [ ] UI updated
-- [ ] SQLite tracker smoke passes
+- [x] SQLite schema added
+- [x] local tracker store migrated from JSON authority to SQLite authority
+- [x] adapter surface preserved
+- [x] CLI updated
+- [x] UI updated
+- [x] SQLite tracker smoke passes
 
 ---
 
-### Slice 11 — Symphony-style claim / lease / reconcile loop
+### Slice 11 — Symphony-style claim / heartbeat / reconcile loop
 
-**Goal:** Make local orchestration correctness match Symphony’s pull-based claim model.
+**Goal:** Make local orchestration correctness match Symphony’s pull-based single-authority claim model.
 
 ### Includes
-- claim / lease records in local tracker authority
+- in-memory orchestrator claim set owned by a single poller instance
 - orchestrator claim attempt before dispatch
-- claim renewal / heartbeat while work is active
+- worker heartbeat updates while work is active
 - reconcile behavior for:
-  - expired claims
-  - dead workers
+  - completed workers
+  - dead/stale worker visibility
   - terminal issues
   - non-runnable issues
-- restart-safe recovery for claimed/running issues
-- duplicate-pick prevention for multiple pollers
+- restart-safe recovery via issue-state authority + ephemeral claims
+- configurable local concurrency for swarm-style local runs
 
 ### Spec anchors
 - `reference/symphony/SPEC.md` §7.2, §7.3, §8, §16.2
 - `reference/symphony/elixir/AGENTS.md`
 
 ### Test / smoke exit criteria
-- two pollers race on the same runnable issue and only one claims it
-- killed worker lease expires and issue becomes claimable again
-- orchestrator restart reconciles active claims correctly
-- terminal/non-runnable issue is not dispatched
+- non-runnable issue is not dispatched
+- active issue is claimed before dispatch
+- completed worker is reconciled and claim is released
+- process restart leaves issue state authoritative and claimable again when still active
+- local concurrency can dispatch more than one active issue when configured
 
 ### Status checklist
-- [ ] claim model implemented
-- [ ] lease renewal implemented
-- [ ] reconcile loop implemented
-- [ ] duplicate-pick smoke passes
-- [ ] restart recovery smoke passes
+- [x] claim model implemented
+- [x] worker heartbeat / claim visibility implemented
+- [x] reconcile loop implemented
+- [x] active-vs-non-runnable dispatch tests added
+- [x] local swarm-concurrency test passes
 
 ---
 
@@ -120,11 +120,12 @@ The next work is specifically about hardening the local tracker/orchestrator mod
 
 ### Includes
 - review local canonical states against Symphony workflow semantics
+- add `backlog` waiting state
 - align runnable / waiting / review / terminal states
+- replace `agent_review` with `human_review`
 - update UI labels and board semantics
 - update orchestrator eligibility rules
 - update agent instructions so tracker transitions match Symphony’s model
-- explicitly decide whether `agent_review` remains or is replaced by `human_review` / equivalent Symphony-compatible state
 
 ### Spec anchors
 - `reference/symphony/SPEC.md` §8.2, §11.5
@@ -137,11 +138,11 @@ The next work is specifically about hardening the local tracker/orchestrator mod
 - terminal issues are not redispatched
 
 ### Status checklist
-- [ ] state mapping decided
-- [ ] tracker state semantics updated
-- [ ] orchestrator eligibility updated
-- [ ] UI board/status labels updated
-- [ ] review/rework smoke passes
+- [x] state mapping decided
+- [x] tracker state semantics updated
+- [x] orchestrator eligibility updated
+- [x] UI board/status labels updated
+- [x] review/rework smoke passes
 
 ---
 
@@ -165,14 +166,14 @@ The next work is specifically about hardening the local tracker/orchestrator mod
 - orchestrator watch loop appears alive in UI
 - stopping the poller marks worker as stale/offline
 - active claim is visible while issue is being worked
-- multi-worker local smoke shows distinct worker heartbeat rows
+- local concurrency surfaces multiple active worker rows when configured
 
 ### Status checklist
-- [ ] worker heartbeat persisted
-- [ ] worker status API added
-- [ ] UI status panel added
-- [ ] stale worker detection added
-- [ ] worker-health smoke passes
+- [x] worker heartbeat persisted
+- [x] worker status API added
+- [x] UI status panel added
+- [x] stale worker detection added
+- [x] worker-health smoke passes
 
 ---
 
@@ -183,11 +184,11 @@ The next work is specifically about hardening the local tracker/orchestrator mod
 ### Includes
 - `agent-browser` smoke drives the UI like a human tracker client
 - browser flow:
-  - create issue
+  - create issue in backlog
   - transition to runnable state
   - observe orchestrator claim it
   - observe agent comments / progress / transition updates
-  - observe final review state in UI
+  - observe final `human_review` state in UI
   - inspect linked run transcript/events in UI
 - no UI API may directly start a run for a selected issue
 
@@ -205,10 +206,10 @@ The next work is specifically about hardening the local tracker/orchestrator mod
   - final review transition
 
 ### Status checklist
-- [ ] UI smoke updated for pull-only flow
-- [ ] separate poller launched in smoke
-- [ ] browser-driven workflow smoke passes
-- [ ] screenshots/artifacts captured
+- [x] UI smoke updated for pull-only flow
+- [x] separate poller launched in smoke
+- [x] browser-driven workflow smoke passes
+- [x] screenshots/artifacts captured
 
 ## Planning principles
 

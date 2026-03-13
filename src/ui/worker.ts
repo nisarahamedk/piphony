@@ -16,6 +16,7 @@ export class LocalTrackerImplementationWorker implements RunWorker {
       title: context.workItem.title,
       state: context.workItem.state,
     });
+    await context.heartbeat?.({ phase: "ui_workflow_started", issue: context.workItem.identifier });
 
     const prompt = [
       `Handle issue ${context.workItem.identifier}: ${context.workItem.title}`,
@@ -24,13 +25,13 @@ export class LocalTrackerImplementationWorker implements RunWorker {
       `Use tracker tools for issue comments and transitions.`,
       `If the issue is currently in Todo or Rework, immediately transition it to in_progress before doing the rest of the work.`,
       `Inspect the repository enough to reference at least two relevant files or directories in your updates.`,
-      `Required workflow:` ,
+      `Required workflow:`,
       `1. Ensure the issue is in in_progress before active work if it started in todo or rework.`,
       `2. Append a tracker comment titled 'Plan' with 2-4 concise bullets tailored to this issue.`,
       `3. Inspect the repo enough to mention at least two relevant files or directories.`,
       `4. Append a tracker comment titled 'Progress' summarizing what you inspected and what should happen next.`,
       `5. Append a tracker comment titled 'Review handoff' that tells the human reviewer what is ready to check next.`,
-      `6. Transition the issue to agent_review.`,
+      `6. Transition the issue to human_review.`,
       `7. Reply with exactly: Issue ${context.workItem.identifier} has been processed.`,
       context.workItem.description === undefined ? "" : `Issue description:\n${context.workItem.description}`,
     ].filter(Boolean).join("\n");
@@ -45,6 +46,7 @@ export class LocalTrackerImplementationWorker implements RunWorker {
       prompt,
       onTrackerEvent: async (event) => {
         await context.logger.emit(event.event, event.details);
+        await context.heartbeat?.({ lastTrackerEvent: event.event });
       },
     });
 
