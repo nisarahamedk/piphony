@@ -1,26 +1,25 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { createRunId } from "../core/utils.js";
+import { attemptCleanup } from "../core/cleanup.js";
+import { errorMessage } from "../core/errors.js";
 import { Orchestrator } from "../core/orchestrator.js";
-import { repoRoot, runsRootDir, trackerDir } from "../smoke/_common.js";
+import { parseOrchestratorWatchConfig } from "./orchestrator-watch-config.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { LocalTrackerStatusSink } from "../tracker/local/status-sink.js";
 import { LocalTrackerStore } from "../tracker/local/state.js";
-import { LocalTrackerImplementationWorker } from "../ui/worker.js";
+import { LocalTrackerSmokeWorker } from "../ui/worker.js";
 
-const intervalMs = Number(process.env.PIPHONY_POLL_INTERVAL_MS ?? 3000);
-const maxConcurrentWorkers = Number(process.env.PIPHONY_MAX_CONCURRENT_WORKERS ?? 1);
-const instanceId = process.env.PIPHONY_ORCHESTRATOR_ID ?? createRunId("orchestrator");
-const trackerStore = new LocalTrackerStore({ trackerDir });
-const tracker = createLocalTrackerAdapter(trackerDir);
-const worker = new LocalTrackerImplementationWorker(repoRoot, trackerDir);
+const config = parseOrchestratorWatchConfig(process.env);
+const trackerStore = new LocalTrackerStore({ trackerDir: config.trackerDir });
+const tracker = createLocalTrackerAdapter(config.trackerDir);
+const worker = new LocalTrackerSmokeWorker(config.repoRoot, config.trackerDir);
 const orchestrator = new Orchestrator({
   tracker,
   worker,
-  runsRootDir,
+  runsRootDir: config.runsRootDir,
   agentType: "implementation",
-  pollIntervalMs: intervalMs,
-  maxConcurrentWorkers,
-  instanceId,
+  pollIntervalMs: config.pollIntervalMs,
+  maxConcurrentWorkers: config.maxConcurrentWorkers,
+  instanceId: config.instanceId,
   statusSink: new LocalTrackerStatusSink(trackerStore),
 });
 
@@ -32,9 +31,13 @@ async function handleShutdown(signal: string): Promise<void> {
   }
   stopping = true;
   console.log(`Piphony orchestrator watch stopping (${signal})`);
-  await orchestrator.shutdown().catch((error) => {
-    console.error("orchestrator_shutdown_error", error instanceof Error ? error.message : String(error));
-  });
+  await attemptCleanup(
+    "orchestrator.shutdown",
+    () => orchestrator.shutdown(),
+    (failure) => {
+      console.error("orchestrator_shutdown_error", failure);
+    },
+  );
   process.exit(0);
 }
 
@@ -45,7 +48,9 @@ process.on("SIGTERM", () => {
   void handleShutdown("SIGTERM");
 });
 
-console.log(`Piphony orchestrator watch starting (interval=${intervalMs}ms, concurrency=${maxConcurrentWorkers}, instance=${instanceId})`);
+console.log(
+  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId})`,
+);
 
 for (;;) {
   if (stopping) {
@@ -54,7 +59,7 @@ for (;;) {
   try {
     await orchestrator.pollOnce();
   } catch (error) {
-    console.error("orchestrator_watch_error", error instanceof Error ? error.message : String(error));
+    console.error("orchestrator_watch_error", errorMessage(error));
   }
-  await sleep(intervalMs);
+  await sleep(config.pollIntervalMs);
 }

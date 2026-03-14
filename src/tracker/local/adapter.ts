@@ -8,7 +8,8 @@ import {
   type TrackerMutation,
   type WorkItem,
 } from "../../core/types.js";
-import { nowIso, withOptional } from "../../core/utils.js";
+import { assertValidWorkItemTransition } from "../../core/work-item-transitions.js";
+import { nowIso } from "../../core/utils.js";
 import { LocalTrackerStore } from "./state.js";
 import type { LocalIssue } from "./types.js";
 
@@ -23,7 +24,12 @@ export class LocalTrackerAdapter implements TrackerAdapter {
   }
 
   async fetchWorkItemById(id: string): Promise<WorkItem | undefined> {
-    const issue = await this.store.findIssue(id);
+    const issue = await this.store.findIssueById(id);
+    return issue === undefined ? undefined : this.normalize(issue);
+  }
+
+  async fetchWorkItemByIdentifier(identifier: string): Promise<WorkItem | undefined> {
+    const issue = await this.store.findIssueByIdentifier(identifier);
     return issue === undefined ? undefined : this.normalize(issue);
   }
 
@@ -34,41 +40,31 @@ export class LocalTrackerAdapter implements TrackerAdapter {
 
   normalize(issue: unknown): WorkItem {
     const local = issue as LocalIssue;
-    return withOptional(
-      withOptional(
-        withOptional(
-          {
-            provider: this.provider,
-            externalId: local.id,
-            identifier: local.identifier,
-            title: local.title,
-            state: local.state,
-            labels: [...local.labels],
-            metadata: {
-              ...local.metadata,
-              comments: local.comments.length,
-              artifacts: local.artifacts.length,
-              createdAt: local.createdAt,
-              updatedAt: local.updatedAt,
-            },
-          },
-          "description",
-          local.description,
-        ),
-        "assignee",
-        local.assignee,
-      ),
-      "url",
-      local.url,
-    );
+    return {
+      provider: this.provider,
+      externalId: local.id,
+      identifier: local.identifier,
+      title: local.title,
+      ...(local.description === undefined ? {} : { description: local.description }),
+      state: local.state,
+      labels: [...local.labels],
+      ...(local.assignee === undefined ? {} : { assignee: local.assignee }),
+      ...(local.priority === undefined ? {} : { priority: local.priority }),
+      ...(local.branchName === undefined ? {} : { branchName: local.branchName }),
+      ...(local.prUrl === undefined ? {} : { prUrl: local.prUrl }),
+      url: local.url,
+      metadata: { ...local.metadata },
+      createdAt: local.createdAt,
+      updatedAt: local.updatedAt,
+    };
   }
 
   async applyMutation(id: string, mutation: TrackerMutation): Promise<WorkItem> {
     let issue: LocalIssue;
     if (mutation.type === "transition") {
-      issue = await this.store.updateIssue(id, (target) => {
-        target.state = mutation.state;
-      });
+      const current = await this.requireIssue(id);
+      assertValidWorkItemTransition(current.state, mutation.state);
+      issue = await this.store.transitionIssue(id, mutation.state);
     } else if (mutation.type === "comment") {
       await this.appendComment(
         id,
@@ -89,9 +85,7 @@ export class LocalTrackerAdapter implements TrackerAdapter {
       author: input.author ?? "agent",
       createdAt: nowIso(),
     };
-    await this.store.updateIssue(id, (issue) => {
-      issue.comments.push(comment);
-    });
+    await this.store.appendIssueComment(id, comment);
     return comment;
   }
 
@@ -104,9 +98,7 @@ export class LocalTrackerAdapter implements TrackerAdapter {
       path: copiedPath,
       createdAt: nowIso(),
     };
-    await this.store.updateIssue(id, (target) => {
-      target.artifacts.push(artifact);
-    });
+    await this.store.appendIssueArtifact(id, artifact);
     return artifact;
   }
 

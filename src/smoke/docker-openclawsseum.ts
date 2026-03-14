@@ -40,6 +40,7 @@ class DockerOpenclawsseumWorker implements RunWorker {
         `2. ls apps`,
         `3. bash scripts/check-no-js.sh`,
         `4. curl -sf http://convex-backend:3210/version | head -c 120`,
+        `If ${context.workItem.identifier} is still in todo or rework, transition it to in_progress before the final handoff.`,
         `Then append a tracker comment saying \"docker smoke ok\" and transition ${context.workItem.identifier} to human_review.`,
         `Finally reply with one short sentence.`,
       ].join("\n"),

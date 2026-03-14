@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { errorMessage } from "@piphony/core/errors";
 
 export function useLiveValue<T>(options: {
   initial: T;
@@ -22,7 +23,7 @@ export function useLiveValue<T>(options: {
       setError(undefined);
       return next;
     } catch (caught: unknown) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(errorMessage(caught));
       throw caught;
     } finally {
       setIsRefreshing(false);
@@ -31,7 +32,9 @@ export function useLiveValue<T>(options: {
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      void refresh().catch(() => undefined);
+      void refresh().catch((error) => {
+        console.error("live_value_refresh_failed", { message: errorMessage(error) });
+      });
     }, options.intervalMs ?? 3_000);
     return () => window.clearInterval(id);
   }, [options.intervalMs, refresh]);

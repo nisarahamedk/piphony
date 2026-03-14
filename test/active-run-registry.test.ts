@@ -23,12 +23,15 @@ function makeWorkItem(externalId: string, identifier: string): WorkItem {
     state: "todo",
     labels: [],
     metadata: {},
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }
 
 function makeControl(): ActiveRunControl {
   return {
     snapshot: () => ({
+      state: "running",
       sessionId: "session-1",
       sessionFile: "/tmp/session.jsonl",
       isStreaming: true,

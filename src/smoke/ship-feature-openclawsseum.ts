@@ -74,6 +74,7 @@ class FeatureShippingWorker implements RunWorker {
       `Likely files: apps/web/src/features/marketing/marketing-shell.tsx and apps/web/src/routes plus apps/web/src/features/marketing pages.`,
       `Validate in runtime with curl -sf http://web:3010/terms and curl -sf http://web:3010/privacy.`,
       `Then use github_cli to commit, push, and open/update a draft PR.`,
+      `If the issue is still in todo or rework, transition it to in_progress before the final handoff.`,
       `Then append a tracker comment with the PR URL and transition the issue to human_review.`,
       `Reply with the PR URL and one sentence about what shipped.`,
     ].join("\n");

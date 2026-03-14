@@ -32,7 +32,9 @@ describe("tracker-local", () => {
       identifier: "LOCAL-T2",
       title: "Persistent issue",
       state: "backlog",
-      metadata: { priority: "high" },
+      priority: "high",
+      metadata: { source: "test" },
+      audit: { createdFrom: "ui", createdBy: "human" },
     });
     await firstStore.upsertWorker({
       workerId: "worker-1",
@@ -50,7 +52,39 @@ describe("tracker-local", () => {
     const snapshot = await secondStore.load();
     expect(snapshot.issues).toHaveLength(1);
     expect(snapshot.issues[0]?.identifier).toBe("LOCAL-T2");
+    expect(snapshot.issues[0]?.priority).toBe("high");
+    expect(snapshot.issues[0]?.audit?.createdFrom).toBe("ui");
     expect(snapshot.workers).toHaveLength(1);
     expect(snapshot.workers[0]?.workerId).toBe("worker-1");
+  });
+
+  test("serializes concurrent tracker writes across store instances without losing comments", async () => {
+    const trackerDir = await mkdtemp(join(tmpdir(), "piphony-tracker-concurrency-"));
+    await resetTrackerState({ trackerDir });
+
+    const firstStore = new LocalTrackerStore({ trackerDir });
+    const secondStore = new LocalTrackerStore({ trackerDir });
+    const issue = await firstStore.createIssue({
+      identifier: "LOCAL-T3",
+      title: "Concurrent issue",
+      state: "todo",
+    });
+
+    await Promise.all(
+      Array.from({ length: 12 }, (_, index) => {
+        const store = index % 2 === 0 ? firstStore : secondStore;
+        return store.appendIssueComment(issue.identifier, {
+          id: `comment-${index}`,
+          body: `comment ${index}`,
+          author: "test",
+          createdAt: `2026-03-12T00:00:${String(index).padStart(2, "0")}.000Z`,
+        });
+      }),
+    );
+
+    const loaded = await secondStore.findIssue(issue.identifier);
+    expect(loaded?.comments).toHaveLength(12);
+    expect(loaded?.comments[0]?.body).toBe("comment 0");
+    expect(loaded?.comments[11]?.body).toBe("comment 11");
   });
 });

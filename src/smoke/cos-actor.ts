@@ -47,6 +47,7 @@ class SteerableWorker implements RunWorker {
         "You may receive steering or follow-up messages while that tool runs.",
         `When finished, reply with one sentence starting exactly with 'Chief of Staff worker complete for ${context.workItem.identifier}:' and include any steering guidance literally.`,
       ].join("\n"));
+      await this.tracker.applyMutation(context.workItem.identifier, { type: "transition", state: "in_progress" });
       await this.tracker.applyMutation(context.workItem.identifier, { type: "transition", state: "human_review" });
       return result.usedModel === undefined
         ? { summary: result.output, output: result.output }

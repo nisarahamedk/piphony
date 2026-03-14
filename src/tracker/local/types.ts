@@ -1,4 +1,14 @@
-import type { CanonicalState, TrackerArtifact, TrackerComment, WorkerHeartbeat } from "../../core/types.js";
+import type { CanonicalState, TrackerArtifact, TrackerComment, WorkerHeartbeat, WorkItemPriority } from "../../core/types.js";
+
+export interface LocalIssueAudit {
+  createdFrom?: string;
+  createdBy?: string;
+  createdViaUiAt?: string;
+  updatedFrom?: string;
+  updatedViaUiAt?: string;
+  lastCommentedFrom?: string;
+  lastCommentedAt?: string;
+}
 
 export interface LocalIssue {
   id: string;
@@ -8,8 +18,12 @@ export interface LocalIssue {
   state: CanonicalState;
   labels: string[];
   assignee?: string;
+  priority?: WorkItemPriority;
+  branchName?: string;
+  prUrl?: string;
   url: string;
   metadata: Record<string, unknown>;
+  audit?: LocalIssueAudit;
   comments: TrackerComment[];
   artifacts: TrackerArtifact[];
   createdAt: string;

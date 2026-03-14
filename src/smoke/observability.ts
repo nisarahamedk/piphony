@@ -6,7 +6,7 @@ import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
+import { makeTempDir, repoRoot, trackerDir } from "./_common.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,6 +18,7 @@ class SuccessWorker implements RunWorker {
     await context.logger.emit("tracker.read", { issueId: context.workItem.identifier });
     await this.adapter.appendComment(context.workItem.identifier, { body: "observability success", author: "pi-agent" });
     await context.logger.emit("tracker.comment", { issueId: context.workItem.identifier });
+    await this.adapter.applyMutation(context.workItem.identifier, { type: "transition", state: "in_progress" });
     await this.adapter.applyMutation(context.workItem.identifier, { type: "transition", state: "human_review" });
     await context.logger.emit("tracker.transition", { issueId: context.workItem.identifier, state: "human_review" });
     return {
@@ -35,6 +36,7 @@ class FailingWorker implements RunWorker {
   }
 }
 
+const runsRootDir = await makeTempDir("piphony-observability-runs");
 await ensureDir(runsRootDir);
 await resetTrackerState({ trackerDir });
 const adapter = createLocalTrackerAdapter(trackerDir);
@@ -68,7 +70,7 @@ const latest = await inspectLatestRun(runsRootDir);
 if (latest === undefined || latest.status.status !== "failed") throw new Error("Expected latest run to be the intentional failure");
 if (!latest.events.some((event) => event.event === "run.failed")) throw new Error("Expected run.failed event");
 
-const { stdout } = await execFileAsync("npm", ["run", "status", "--", "--latest"], { cwd: repoRoot });
+const { stdout } = await execFileAsync("npm", ["run", "status", "--", "--latest", "--runs-root-dir", runsRootDir], { cwd: repoRoot });
 if (!stdout.includes(latest.runId)) throw new Error("Expected status command to report latest failed run");
 
 console.log(JSON.stringify({ ok: true, successRun: successRun.run.runId, failedRun: latest.runId }, null, 2));

@@ -7,6 +7,8 @@ import { Type } from "@sinclair/typebox";
 import { createClient } from "rivetkit/client";
 import { chromium, type Page } from "playwright";
 import { ActiveRunRegistry } from "../core/active-run-registry.js";
+import { attemptCleanup } from "../core/cleanup.js";
+import { errorMessage } from "../core/errors.js";
 import { Orchestrator, type RunWorker, type RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir, resetDir } from "../core/utils.js";
 import { createChiefOfStaffRegistry } from "../cos/actor.js";
@@ -65,6 +67,7 @@ class ExtensionSteerableWorker implements RunWorker {
         "You may receive steering or follow-up messages while that tool runs.",
         `When finished, reply with one sentence starting exactly with 'Extension worker complete for ${context.workItem.identifier}:' and include any received steering guidance literally.`,
       ].join("\n"));
+      await this.tracker.applyMutation(context.workItem.identifier, { type: "transition", state: "in_progress" });
       await this.tracker.applyMutation(context.workItem.identifier, { type: "transition", state: "human_review" });
       return { summary: result.output, output: result.output };
     } finally {
@@ -102,11 +105,11 @@ async function waitForHttp(url: string, attempts = 180): Promise<void> {
 }
 
 async function killExistingWebServer(): Promise<void> {
-  await runShell("pkill -f 'vite --config apps/web/vite.config.ts'", 10_000).catch(() => undefined);
+  await attemptCleanup("smoke.extension_web.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts'", 10_000).then(() => undefined));
 }
 
 async function killExistingOrchestratorWatch(): Promise<void> {
-  await runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", 10_000).catch(() => undefined);
+  await attemptCleanup("smoke.extension_web.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", 10_000).then(() => undefined));
 }
 
 function startWebServer() {
@@ -130,15 +133,19 @@ async function waitForActiveRun(registry: ActiveRunRegistry, identifier: string)
 
 async function waitForCompletedRunToken(runId: string, token: string): Promise<string> {
   for (let attempt = 0; attempt < 180; attempt += 1) {
-    const run = await inspectRun(runsRootDir, runId).catch(() => undefined);
-    const haystacks = [
-      run?.transcript,
-      run?.summary === undefined ? undefined : JSON.stringify(run.summary),
-      run?.status === undefined ? undefined : JSON.stringify(run.status),
-      run?.events === undefined ? undefined : JSON.stringify(run.events),
-    ].filter((value): value is string => typeof value === "string");
-    if (run?.status.status === "completed" && haystacks.some((value) => value.includes(token))) {
-      return run.runId;
+    try {
+      const run = await inspectRun(runsRootDir, runId);
+      const haystacks = [
+        run.transcript,
+        run.summary === undefined ? undefined : JSON.stringify(run.summary),
+        JSON.stringify(run.status),
+        JSON.stringify(run.events),
+      ].filter((value): value is string => typeof value === "string");
+      if (run.status.status === "completed" && haystacks.some((value) => value.includes(token))) {
+        return run.runId;
+      }
+    } catch (error) {
+      console.error("extension_web_run_inspection_failed", { runId, message: errorMessage(error) });
     }
     await sleep(1_000);
   }
@@ -355,7 +362,7 @@ try {
 } finally {
   stopPolling = true;
   await pollLoop;
-  await cosServer.close().catch(() => undefined);
+  await attemptCleanup("smoke.extension_web.cos_server.close", () => cosServer.close());
   webServer.kill("SIGTERM");
 }
 

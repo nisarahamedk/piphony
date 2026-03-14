@@ -70,11 +70,28 @@ describe("orchestrator poll loop", () => {
 
     releaseGate();
     await new Promise((resolve) => setTimeout(resolve, 75));
+    await adapter.applyMutation("LOCAL-T1", { type: "transition", state: "in_progress" });
     await adapter.applyMutation("LOCAL-T1", { type: "transition", state: "human_review" });
     const secondSnapshot = await orchestrator.pollOnce();
     expect(secondSnapshot.claimedIssueIds).toHaveLength(0);
     expect(secondSnapshot.runningWorkers).toHaveLength(0);
     expect(sink.workers.size).toBe(0);
+  });
+
+  test("rejects poll and run after shutdown", async () => {
+    const trackerDir = await mkdtemp(join(tmpdir(), "piphony-orchestrator-shutdown-"));
+    const runsRootDir = await mkdtemp(join(tmpdir(), "piphony-runs-shutdown-"));
+    await resetTrackerState({ trackerDir });
+    const adapter = createLocalTrackerAdapter(trackerDir);
+    const orchestrator = new Orchestrator({
+      tracker: adapter,
+      worker: new GatedWorker(Promise.resolve()),
+      runsRootDir,
+    });
+
+    await orchestrator.shutdown();
+    await expect(orchestrator.pollOnce()).rejects.toThrow("Cannot poll orchestrator after shutdown");
+    await expect(orchestrator.runOnce()).rejects.toThrow("Cannot run orchestrator after shutdown");
   });
 
   test("supports local swarm-style concurrency when configured", async () => {
@@ -104,7 +121,9 @@ describe("orchestrator poll loop", () => {
 
     releaseGate();
     await new Promise((resolve) => setTimeout(resolve, 75));
+    await adapter.applyMutation("LOCAL-S1", { type: "transition", state: "in_progress" });
     await adapter.applyMutation("LOCAL-S1", { type: "transition", state: "human_review" });
+    await adapter.applyMutation("LOCAL-S2", { type: "transition", state: "in_progress" });
     await adapter.applyMutation("LOCAL-S2", { type: "transition", state: "human_review" });
     const cleared = await orchestrator.pollOnce();
     expect(cleared.runningWorkers).toHaveLength(0);

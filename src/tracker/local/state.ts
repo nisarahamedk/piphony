@@ -2,9 +2,12 @@ import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { ensureDir, nowIso, readJson, withOptional } from "../../core/utils.js";
+import { errorMessage } from "../../core/errors.js";
+import { ensureDir, nowIso, readJson } from "../../core/utils.js";
 import type { TrackerArtifact, TrackerComment, WorkerHeartbeat } from "../../core/types.js";
-import type { LocalIssue, LocalTrackerState, LocalTrackerWorker } from "./types.js";
+import type { LocalIssue, LocalIssueAudit, LocalTrackerState, LocalTrackerWorker } from "./types.js";
+
+const trackerStoreMutexes = new Map<string, TrackerStoreMutex>();
 
 export interface LocalTrackerStoreOptions {
   trackerDir: string;
@@ -18,8 +21,12 @@ interface IssueRow {
   state: string;
   labels_json: string;
   assignee: string | null;
+  priority: string | null;
+  branch_name: string | null;
+  pr_url: string | null;
   url: string;
   metadata_json: string;
+  audit_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -57,6 +64,33 @@ interface WorkerRow {
   details_json: string;
 }
 
+class TrackerStoreMutex {
+  private tail: Promise<void> = Promise.resolve();
+
+  async runExclusive<T>(operation: () => Promise<T> | T): Promise<T> {
+    const previous = this.tail;
+    let release: (() => void) | undefined;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release?.();
+    }
+  }
+}
+
+function trackerStoreMutex(dbFile: string): TrackerStoreMutex {
+  let mutex = trackerStoreMutexes.get(dbFile);
+  if (mutex === undefined) {
+    mutex = new TrackerStoreMutex();
+    trackerStoreMutexes.set(dbFile, mutex);
+  }
+  return mutex;
+}
+
 export class LocalTrackerStore {
   readonly trackerDir: string;
   readonly dbFile: string;
@@ -71,7 +105,7 @@ export class LocalTrackerStore {
   async ensure(): Promise<void> {
     await ensureDir(this.trackerDir);
     await ensureDir(this.artifactsDir);
-    this.withDatabase((db) => {
+    await this.withDatabase((db) => {
       initializeSchema(db);
     });
   }
@@ -89,12 +123,12 @@ export class LocalTrackerStore {
 
   async loadIssues(): Promise<LocalIssue[]> {
     await this.ensure();
-    return this.withDatabase((db) => selectIssues(db));
+    return await this.withDatabase((db) => selectIssues(db));
   }
 
   async loadWorkers(): Promise<LocalTrackerWorker[]> {
     await this.ensure();
-    return this.withDatabase((db) => selectWorkers(db));
+    return await this.withDatabase((db) => selectWorkers(db));
   }
 
   async listIssuesByStates(states: readonly string[]): Promise<LocalIssue[]> {
@@ -107,7 +141,7 @@ export class LocalTrackerStore {
     await rm(this.trackerDir, { recursive: true, force: true });
     await this.ensure();
     const next = seed ?? emptyLocalTrackerState();
-    this.withDatabase((db) => {
+    await this.withDatabase((db) => {
       initializeSchema(db);
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -140,33 +174,35 @@ export class LocalTrackerStore {
     state: LocalIssue["state"];
     labels?: string[];
     assignee?: string;
+    priority?: LocalIssue["priority"];
+    branchName?: string;
+    prUrl?: string;
     metadata?: Record<string, unknown>;
+    audit?: LocalIssueAudit;
   }): Promise<LocalIssue> {
     await this.ensure();
     const timestamp = nowIso();
-    const issue = withOptional(
-      withOptional(
-        {
-          id: randomUUID(),
-          identifier: input.identifier,
-          title: input.title,
-          state: input.state,
-          labels: input.labels ?? [],
-          url: `local://issues/${input.identifier}`,
-          metadata: input.metadata ?? {},
-          comments: [],
-          artifacts: [],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-        "description",
-        input.description,
-      ),
-      "assignee",
-      input.assignee,
-    ) as LocalIssue;
+    const issue: LocalIssue = {
+      id: randomUUID(),
+      identifier: input.identifier,
+      title: input.title,
+      ...(input.description === undefined ? {} : { description: input.description }),
+      state: input.state,
+      labels: input.labels ?? [],
+      ...(input.assignee === undefined ? {} : { assignee: input.assignee }),
+      ...(input.priority === undefined ? {} : { priority: input.priority }),
+      ...(input.branchName === undefined ? {} : { branchName: input.branchName }),
+      ...(input.prUrl === undefined ? {} : { prUrl: input.prUrl }),
+      url: `local://issues/${input.identifier}`,
+      metadata: input.metadata ?? {},
+      ...(input.audit === undefined ? {} : { audit: input.audit }),
+      comments: [],
+      artifacts: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
 
-    this.withDatabase((db) => {
+    await this.withDatabase((db) => {
       initializeSchema(db);
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -187,7 +223,17 @@ export class LocalTrackerStore {
 
   async findIssue(identifierOrId: string): Promise<LocalIssue | undefined> {
     await this.ensure();
-    return this.withDatabase((db) => selectIssueByIdentifierOrId(db, identifierOrId));
+    return await this.withDatabase((db) => selectIssueByIdentifierOrId(db, identifierOrId));
+  }
+
+  async findIssueById(id: string): Promise<LocalIssue | undefined> {
+    await this.ensure();
+    return await this.withDatabase((db) => selectIssueById(db, id));
+  }
+
+  async findIssueByIdentifier(identifier: string): Promise<LocalIssue | undefined> {
+    await this.ensure();
+    return await this.withDatabase((db) => selectIssueByIdentifier(db, identifier));
   }
 
   async updateIssue(identifierOrId: string, mutate: (issue: LocalIssue) => void): Promise<LocalIssue> {
@@ -201,7 +247,7 @@ export class LocalTrackerStore {
     mutate(nextIssue);
     nextIssue.updatedAt = nowIso();
 
-    this.withDatabase((db) => {
+    await this.withDatabase((db) => {
       initializeSchema(db);
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -222,9 +268,99 @@ export class LocalTrackerStore {
     return nextIssue;
   }
 
+  async transitionIssue(identifierOrId: string, nextState: LocalIssue["state"]): Promise<LocalIssue> {
+    const current = await this.findIssue(identifierOrId);
+    if (current === undefined) {
+      throw new Error(`Local issue not found: ${identifierOrId}`);
+    }
+    const updatedAt = nowIso();
+    await this.withDatabase((db) => {
+      initializeSchema(db);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare("UPDATE issues SET state = ?, updated_at = ? WHERE id = ?").run(nextState, updatedAt, current.id);
+        if (current.state !== nextState) {
+          db.prepare(
+            `INSERT INTO issue_state_history (issue_id, from_state, to_state, actor, reason, created_at)
+             VALUES (?, ?, ?, 'system', 'state transition', ?)`,
+          ).run(current.id, current.state, nextState, updatedAt);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+    return (await this.findIssueById(current.id))!;
+  }
+
+  async appendIssueComment(identifierOrId: string, comment: TrackerComment): Promise<void> {
+    const current = await this.findIssue(identifierOrId);
+    if (current === undefined) {
+      throw new Error(`Local issue not found: ${identifierOrId}`);
+    }
+    await this.withDatabase((db) => {
+      initializeSchema(db);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare(
+          `INSERT INTO issue_comments (id, issue_id, body, author, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(comment.id, current.id, comment.body, comment.author, comment.createdAt);
+        db.prepare("UPDATE issues SET updated_at = ? WHERE id = ?").run(comment.createdAt, current.id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  async appendIssueArtifact(identifierOrId: string, artifact: TrackerArtifact): Promise<void> {
+    const current = await this.findIssue(identifierOrId);
+    if (current === undefined) {
+      throw new Error(`Local issue not found: ${identifierOrId}`);
+    }
+    await this.withDatabase((db) => {
+      initializeSchema(db);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare(
+          `INSERT INTO issue_artifacts (id, issue_id, name, path, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(artifact.id, current.id, artifact.name, artifact.path, artifact.createdAt);
+        db.prepare("UPDATE issues SET updated_at = ? WHERE id = ?").run(artifact.createdAt, current.id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  async updateIssueAudit(identifierOrId: string, mutate: (audit: LocalIssueAudit) => LocalIssueAudit): Promise<void> {
+    const current = await this.findIssue(identifierOrId);
+    if (current === undefined) {
+      throw new Error(`Local issue not found: ${identifierOrId}`);
+    }
+    const nextAudit = mutate({ ...(current.audit ?? {}) });
+    const updatedAt = nowIso();
+    await this.withDatabase((db) => {
+      initializeSchema(db);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare("UPDATE issues SET audit_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(nextAudit), updatedAt, current.id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   async upsertWorker(worker: WorkerHeartbeat): Promise<void> {
     await this.ensure();
-    this.withDatabase((db) => {
+    await this.withDatabase((db) => {
       initializeSchema(db);
       upsertWorkerRow(db, worker);
     });
@@ -232,7 +368,7 @@ export class LocalTrackerStore {
 
   async deleteWorker(workerId: string): Promise<void> {
     await this.ensure();
-    this.withDatabase((db) => {
+    await this.withDatabase((db) => {
       initializeSchema(db);
       db.prepare("DELETE FROM worker_status WHERE worker_id = ?").run(workerId);
     });
@@ -246,9 +382,8 @@ export class LocalTrackerStore {
     return destination;
   }
 
-  private withDatabase<T>(operation: (db: DatabaseSync) => T): T {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+  private async withDatabase<T>(operation: (db: DatabaseSync) => T): Promise<T> {
+    return trackerStoreMutex(this.dbFile).runExclusive(() => {
       const db = new DatabaseSync(this.dbFile);
       try {
         db.exec("PRAGMA busy_timeout = 5000");
@@ -256,30 +391,12 @@ export class LocalTrackerStore {
         db.exec("PRAGMA journal_mode = WAL");
         return operation(db);
       } catch (error) {
-        lastError = error;
-        if (!isSqliteLockedError(error) || attempt === 5) {
-          throw error;
-        }
-        sleepSync(100 * (attempt + 1));
+        throw new Error(`Local tracker database operation failed for ${this.dbFile}: ${errorMessage(error)}`);
       } finally {
         db.close();
       }
-    }
-    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    });
   }
-}
-
-function isSqliteLockedError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  const anyError = error as Error & { code?: string; errcode?: number; errstr?: string };
-  return anyError.code === "ERR_SQLITE_ERROR"
-    && (anyError.errcode === 5 || anyError.errcode === 261 || (anyError.errstr ?? "").includes("locked") || error.message.includes("locked"));
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 export function emptyLocalTrackerState(): LocalTrackerState {
@@ -315,8 +432,12 @@ function initializeSchema(db: DatabaseSync): void {
       state TEXT NOT NULL,
       labels_json TEXT NOT NULL,
       assignee TEXT,
+      priority TEXT,
+      branch_name TEXT,
+      pr_url TEXT,
       url TEXT NOT NULL,
       metadata_json TEXT NOT NULL,
+      audit_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -373,12 +494,24 @@ function initializeSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_worker_status_owner_id ON worker_status(owner_id);
     CREATE INDEX IF NOT EXISTS idx_worker_status_last_seen_at ON worker_status(last_seen_at);
   `);
+  ensureIssueColumn(db, "priority", "TEXT");
+  ensureIssueColumn(db, "branch_name", "TEXT");
+  ensureIssueColumn(db, "pr_url", "TEXT");
+  ensureIssueColumn(db, "audit_json", "TEXT");
+}
+
+function ensureIssueColumn(db: DatabaseSync, columnName: string, definition: string): void {
+  const columns = db.prepare("PRAGMA table_info(issues)").all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+  db.exec(`ALTER TABLE issues ADD COLUMN ${columnName} ${definition}`);
 }
 
 function insertIssue(db: DatabaseSync, issue: LocalIssue): void {
   db.prepare(
-    `INSERT INTO issues (id, identifier, title, description, state, labels_json, assignee, url, metadata_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO issues (id, identifier, title, description, state, labels_json, assignee, priority, branch_name, pr_url, url, metadata_json, audit_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     issue.id,
     issue.identifier,
@@ -387,8 +520,12 @@ function insertIssue(db: DatabaseSync, issue: LocalIssue): void {
     issue.state,
     JSON.stringify(issue.labels),
     issue.assignee ?? null,
+    issue.priority ?? null,
+    issue.branchName ?? null,
+    issue.prUrl ?? null,
     issue.url,
     JSON.stringify(issue.metadata),
+    issue.audit === undefined ? null : JSON.stringify(issue.audit),
     issue.createdAt,
     issue.updatedAt,
   );
@@ -397,7 +534,7 @@ function insertIssue(db: DatabaseSync, issue: LocalIssue): void {
 function rewriteIssue(db: DatabaseSync, issue: LocalIssue): void {
   db.prepare(
     `UPDATE issues
-     SET identifier = ?, title = ?, description = ?, state = ?, labels_json = ?, assignee = ?, url = ?, metadata_json = ?, updated_at = ?
+     SET identifier = ?, title = ?, description = ?, state = ?, labels_json = ?, assignee = ?, priority = ?, branch_name = ?, pr_url = ?, url = ?, metadata_json = ?, audit_json = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     issue.identifier,
@@ -406,8 +543,12 @@ function rewriteIssue(db: DatabaseSync, issue: LocalIssue): void {
     issue.state,
     JSON.stringify(issue.labels),
     issue.assignee ?? null,
+    issue.priority ?? null,
+    issue.branchName ?? null,
+    issue.prUrl ?? null,
     issue.url,
     JSON.stringify(issue.metadata),
+    issue.audit === undefined ? null : JSON.stringify(issue.audit),
     issue.updatedAt,
     issue.id,
   );
@@ -477,7 +618,7 @@ function upsertWorkerRow(db: DatabaseSync, worker: WorkerHeartbeat): void {
 
 function selectIssues(db: DatabaseSync): LocalIssue[] {
   const issueRows = db.prepare(
-    `SELECT id, identifier, title, description, state, labels_json, assignee, url, metadata_json, created_at, updated_at
+    `SELECT id, identifier, title, description, state, labels_json, assignee, priority, branch_name, pr_url, url, metadata_json, audit_json, created_at, updated_at
      FROM issues
      ORDER BY created_at ASC, identifier ASC`,
   ).all() as unknown as IssueRow[];
@@ -522,13 +663,42 @@ function selectIssues(db: DatabaseSync): LocalIssue[] {
 }
 
 function selectIssueByIdentifierOrId(db: DatabaseSync, identifierOrId: string): LocalIssue | undefined {
-  const row = db.prepare(
-    `SELECT id, identifier, title, description, state, labels_json, assignee, url, metadata_json, created_at, updated_at
-     FROM issues
-     WHERE id = ? OR identifier = ?
-     LIMIT 1`,
-  ).get(identifierOrId, identifierOrId) as IssueRow | undefined;
+  return selectIssueByRow(
+    db.prepare(
+      `SELECT id, identifier, title, description, state, labels_json, assignee, priority, branch_name, pr_url, url, metadata_json, audit_json, created_at, updated_at
+       FROM issues
+       WHERE id = ? OR identifier = ?
+       LIMIT 1`,
+    ).get(identifierOrId, identifierOrId) as IssueRow | undefined,
+    db,
+  );
+}
 
+function selectIssueById(db: DatabaseSync, id: string): LocalIssue | undefined {
+  return selectIssueByRow(
+    db.prepare(
+      `SELECT id, identifier, title, description, state, labels_json, assignee, priority, branch_name, pr_url, url, metadata_json, audit_json, created_at, updated_at
+       FROM issues
+       WHERE id = ?
+       LIMIT 1`,
+    ).get(id) as IssueRow | undefined,
+    db,
+  );
+}
+
+function selectIssueByIdentifier(db: DatabaseSync, identifier: string): LocalIssue | undefined {
+  return selectIssueByRow(
+    db.prepare(
+      `SELECT id, identifier, title, description, state, labels_json, assignee, priority, branch_name, pr_url, url, metadata_json, audit_json, created_at, updated_at
+       FROM issues
+       WHERE identifier = ?
+       LIMIT 1`,
+    ).get(identifier) as IssueRow | undefined,
+    db,
+  );
+}
+
+function selectIssueByRow(row: IssueRow | undefined, db: DatabaseSync): LocalIssue | undefined {
   if (row === undefined) {
     return undefined;
   }
@@ -564,64 +734,48 @@ function selectWorkers(db: DatabaseSync): LocalTrackerWorker[] {
 }
 
 function hydrateIssue(row: IssueRow, comments: TrackerComment[], artifacts: TrackerArtifact[]): LocalIssue {
-  const labels = parseJsonColumn<string[]>(row.labels_json, []);
-  const metadata = parseJsonColumn<Record<string, unknown>>(row.metadata_json, {});
-  return withOptional(
-    withOptional(
-      {
-        id: row.id,
-        identifier: row.identifier,
-        title: row.title,
-        state: row.state as LocalIssue["state"],
-        labels,
-        url: row.url,
-        metadata,
-        comments,
-        artifacts,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      },
-      "description",
-      row.description ?? undefined,
-    ),
-    "assignee",
-    row.assignee ?? undefined,
-  ) as LocalIssue;
+  const labels = parseJsonColumn<string[]>(row.labels_json, "issues.labels_json");
+  const metadata = parseJsonColumn<Record<string, unknown>>(row.metadata_json, "issues.metadata_json");
+  const audit = row.audit_json === null ? undefined : parseJsonColumn<LocalIssueAudit>(row.audit_json, "issues.audit_json");
+  return {
+    id: row.id,
+    identifier: row.identifier,
+    title: row.title,
+    ...(row.description === null ? {} : { description: row.description }),
+    state: row.state as LocalIssue["state"],
+    labels,
+    ...(row.assignee === null ? {} : { assignee: row.assignee }),
+    ...(row.priority === null ? {} : { priority: row.priority as Exclude<LocalIssue["priority"], undefined> }),
+    ...(row.branch_name === null ? {} : { branchName: row.branch_name }),
+    ...(row.pr_url === null ? {} : { prUrl: row.pr_url }),
+    url: row.url,
+    metadata,
+    ...(audit === undefined ? {} : { audit }),
+    comments,
+    artifacts,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function hydrateWorker(row: WorkerRow): LocalTrackerWorker {
-  const details = parseJsonColumn<Record<string, unknown>>(row.details_json, {});
-  return withOptional(
-    withOptional(
-      withOptional(
-        withOptional(
-          withOptional(
-            {
-              workerId: row.worker_id,
-              ownerId: row.owner_id,
-              role: row.role,
-              status: row.status as LocalTrackerWorker["status"],
-              processId: row.process_id,
-              host: row.host,
-              startedAt: row.started_at,
-              lastSeenAt: row.last_seen_at,
-              details,
-            },
-            "lastPollAt",
-            row.last_poll_at ?? undefined,
-          ),
-          "nextPollAt",
-          row.next_poll_at ?? undefined,
-        ),
-        "currentIssueId",
-        row.current_issue_id ?? undefined,
-      ),
-      "currentIssueIdentifier",
-      row.current_issue_identifier ?? undefined,
-    ),
-    "currentRunId",
-    row.current_run_id ?? undefined,
-  ) as LocalTrackerWorker;
+  const details = parseJsonColumn<Record<string, unknown>>(row.details_json, "worker_status.details_json");
+  return {
+    workerId: row.worker_id,
+    ownerId: row.owner_id,
+    role: row.role,
+    status: row.status as LocalTrackerWorker["status"],
+    processId: row.process_id,
+    host: row.host,
+    startedAt: row.started_at,
+    lastSeenAt: row.last_seen_at,
+    ...(row.last_poll_at === null ? {} : { lastPollAt: row.last_poll_at }),
+    ...(row.next_poll_at === null ? {} : { nextPollAt: row.next_poll_at }),
+    ...(row.current_issue_id === null ? {} : { currentIssueId: row.current_issue_id }),
+    ...(row.current_issue_identifier === null ? {} : { currentIssueIdentifier: row.current_issue_identifier }),
+    ...(row.current_run_id === null ? {} : { currentRunId: row.current_run_id }),
+    details,
+  };
 }
 
 function cloneIssue(issue: LocalIssue): LocalIssue {
@@ -629,15 +783,16 @@ function cloneIssue(issue: LocalIssue): LocalIssue {
     ...issue,
     labels: [...issue.labels],
     metadata: { ...issue.metadata },
+    ...(issue.audit === undefined ? {} : { audit: { ...issue.audit } }),
     comments: issue.comments.map((comment) => ({ ...comment })),
     artifacts: issue.artifacts.map((artifact) => ({ ...artifact })),
   };
 }
 
-function parseJsonColumn<T>(value: string, fallback: T): T {
+function parseJsonColumn<T>(value: string, columnName: string): T {
   try {
     return JSON.parse(value) as T;
-  } catch {
-    return fallback;
+  } catch (error) {
+    throw new Error(`Failed to parse persisted JSON column ${columnName}: ${errorMessage(error)}`);
   }
 }

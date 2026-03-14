@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { chromium, type Page } from "playwright";
+import { attemptCleanup } from "../core/cleanup.js";
+import { errorMessage } from "../core/errors.js";
 import { Orchestrator, type RunWorker, type RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir, resetDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
@@ -30,6 +32,10 @@ class WebUiSmokeWorker implements RunWorker {
     });
     await sleep(300);
 
+    await this.tracker.applyMutation(context.workItem.identifier, {
+      type: "transition",
+      state: "in_progress",
+    });
     await this.tracker.applyMutation(context.workItem.identifier, {
       type: "comment",
       author: "agent",
@@ -125,11 +131,11 @@ async function seedUiState(): Promise<void> {
 }
 
 async function killExistingWebServer(): Promise<void> {
-  await runShell("pkill -f 'vite --config apps/web/vite.config.ts'", { timeoutMs: 10_000 }).catch(() => undefined);
+  await attemptCleanup("smoke.web_ui.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts'", { timeoutMs: 10_000 }).then(() => undefined));
 }
 
 async function killExistingOrchestrator(): Promise<void> {
-  await runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", { timeoutMs: 10_000 }).catch(() => undefined);
+  await attemptCleanup("smoke.web_ui.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", { timeoutMs: 10_000 }).then(() => undefined));
 }
 
 function startWebServer() {
@@ -157,7 +163,7 @@ let stopPolling = false;
 const pollLoop = (async () => {
   while (!stopPolling) {
     await orchestrator.pollOnce().catch((error) => {
-      console.error("web_ui_smoke_orchestrator_error", error instanceof Error ? error.message : String(error));
+      console.error("web_ui_smoke_orchestrator_error", errorMessage(error));
     });
     await sleep(1_000);
   }
@@ -219,9 +225,9 @@ try {
     });
 
     await page.locator("[data-testid='issue-inspector'] button").first().click();
-    await page.waitForSelector("[data-testid='worker-status-panel']", { timeout: 30_000 });
 
     await page.getByRole("link", { name: /runs/i }).click();
+    await page.waitForSelector("[data-testid='worker-status-panel']", { timeout: 30_000 });
     await waitForBodyText({
       page,
       includes: [createdIdentifier, `Issue ${createdIdentifier} has been processed`],

@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import { inspectLatestRun, inspectRun } from "../index.js";
-import { runsRootDir } from "../smoke/_common.js";
+import { parseStatusCliConfig } from "./status-config.js";
 
-const args = process.argv.slice(2);
-const runIdFlagIndex = args.indexOf("--run-id");
-const runId = runIdFlagIndex === -1 ? undefined : args[runIdFlagIndex + 1];
-const latest = args.includes("--latest") || runId === undefined;
-const inspection = latest ? await inspectLatestRun(runsRootDir) : await inspectRun(runsRootDir, runId!);
+const config = parseStatusCliConfig(process.argv.slice(2));
+const inspection = config.latest
+  ? await inspectLatestRun(config.runsRootDir)
+  : await inspectRun(config.runsRootDir, config.runId!);
 
 if (inspection === undefined) {
   console.log("No runs found.");

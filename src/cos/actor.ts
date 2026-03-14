@@ -3,6 +3,7 @@ import { actor, event, queue, setup } from "rivetkit";
 import { createPiSessionController } from "../pi/runner.js";
 import type { PiSessionController } from "../pi/session-controller.js";
 import { createChiefOfStaffExtension } from "./pi-extension.js";
+import { errorMessage } from "../core/errors.js";
 import type { ProviderCapacityService } from "../pi/provider-middleware.js";
 import type { ChiefOfStaffServices, TrackerPageContext } from "./types.js";
 
@@ -157,7 +158,7 @@ export function createChiefOfStaffRegistry(options: ChiefOfStaffActorOptions): a
           };
           c.broadcast("status", c.state.status);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = errorMessage(error);
           const providerStatus = controller.getProviderStatus();
           assistantMessage.content = assistantMessage.content || humanizeChiefOfStaffError(message, providerStatus?.provider, providerStatus?.cooldownUntil);
           c.state.status = {

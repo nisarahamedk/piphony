@@ -1,8 +1,9 @@
-import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 import { CANONICAL_STATES, type CanonicalState, type WorkerStatus } from "@piphony/core/types";
 import { nowIso } from "@piphony/core/utils";
+import { parseCanonicalState } from "@piphony/core/work-item-transitions";
+import { inspectRun, listRuns, listRunSummaries, type RunInspection, type RunSummaryInspection } from "@piphony/observability";
+import { resolveWebServerPaths } from "./config";
 import { LocalTrackerStore } from "@piphony/tracker/local/state";
 import type { LocalIssue, LocalTrackerState, LocalTrackerWorker } from "@piphony/tracker/local/types";
 import type {
@@ -14,10 +15,9 @@ import type {
   RunDetail,
 } from "../models";
 
-const repoRoot = resolve(process.cwd());
-const piphonyDir = resolve(repoRoot, ".piphony");
-const trackerDir = resolve(piphonyDir, "tracker-local");
-const runsDir = resolve(piphonyDir, "runs");
+const webServerPaths = resolveWebServerPaths();
+const trackerDir = webServerPaths.trackerDir;
+const runsDir = webServerPaths.runsRootDir;
 const WORKER_STALE_AFTER_MS = 15_000;
 
 export function getTrackerStore(): LocalTrackerStore {
@@ -26,15 +26,15 @@ export function getTrackerStore(): LocalTrackerStore {
 
 export async function readDashboardSnapshot(): Promise<DashboardSnapshot> {
   const [issues, recentRuns, workers] = await Promise.all([readIssues(), readRunsIndex(), readWorkers()]);
-  const byIssueId = new Map<string, DashboardRunSummary>();
+  const latestRunByIssueId = new Map<string, DashboardRunSummary>();
   for (const run of recentRuns) {
-    if (run.workItemId !== "none" && !byIssueId.has(run.workItemId)) {
-      byIssueId.set(run.workItemId, run);
+    if (run.workItemId !== "none" && !latestRunByIssueId.has(run.workItemId)) {
+      latestRunByIssueId.set(run.workItemId, run);
     }
   }
 
   const enrichedIssues = issues.map((issue) => {
-    const latestRun = byIssueId.get(issue.id);
+    const latestRun = latestRunByIssueId.get(issue.id);
     return latestRun === undefined ? issue : { ...issue, latestRun };
   });
 
@@ -56,7 +56,7 @@ export async function readDashboardSnapshot(): Promise<DashboardSnapshot> {
 export async function readIssues(): Promise<DashboardIssue[]> {
   const state = await getTrackerStore().load();
   return state.issues
-    .map((issue) => serializeIssue(issue))
+    .map(serializeIssue)
     .sort((left, right) => left.identifier.localeCompare(right.identifier, undefined, { numeric: true }));
 }
 
@@ -68,42 +68,35 @@ export async function readIssueById(id: string): Promise<DashboardIssue | undefi
 export async function readWorkers(): Promise<DashboardWorkerStatus[]> {
   const state = await getTrackerStore().load();
   return state.workers
-    .map((worker) => serializeWorker(worker))
+    .map(serializeWorker)
     .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
 }
 
 export async function readRunsIndex(): Promise<DashboardRunSummary[]> {
-  if (!existsSync(runsDir)) {
-    return [];
-  }
-  const dirs = await readdir(runsDir, { withFileTypes: true });
-  const runs = await Promise.all(
-    dirs
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => readRunSummary(resolve(runsDir, entry.name))),
-  );
+  const runs = await listRunSummaries(runsDir);
   return runs
-    .filter((run): run is DashboardRunSummary => run !== undefined)
+    .map(serializeRunSummary)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 export async function readRunDetail(runId: string): Promise<RunDetail | undefined> {
-  const runDir = resolve(runsDir, runId);
-  const summary = await readRunSummary(runDir);
-  if (summary === undefined) {
+  const runIds = await listRuns(runsDir);
+  if (!runIds.includes(runId)) {
     return undefined;
   }
-  const [summaryData, transcript, events] = await Promise.all([
-    readJsonIfExists<Record<string, JsonValue>>(resolve(runDir, "summary.json")),
-    readTextIfExists(resolve(runDir, "transcript.md")),
-    readEvents(resolve(runDir, "events.jsonl")),
-  ]);
-  const trimmedTranscript = transcript?.trim() === "" ? undefined : transcript;
+  const run = await inspectRun(runsDir, runId);
+  const summary = serializeRunSummary(run);
+  const trimmedTranscript = run.transcript?.trim() === "" ? undefined : run.transcript;
   return {
     ...summary,
-    ...(summaryData === undefined ? {} : { summaryData }),
+    ...(run.summary === undefined ? {} : { summaryData: toJsonRecord(run.summary as unknown as Record<string, unknown>) }),
     ...(trimmedTranscript === undefined ? {} : { transcript: trimmedTranscript }),
-    events,
+    events: run.events.map((event) => ({
+      timestamp: event.timestamp,
+      event: event.event,
+      ...(event.runId === undefined ? {} : { runId: event.runId }),
+      ...(event.data === undefined ? {} : { data: toJsonRecord(event.data) }),
+    })),
   };
 }
 
@@ -132,13 +125,17 @@ export function normalizeOptionalString(value?: string): string | undefined {
 }
 
 export function normalizeState(value: string): CanonicalState {
-  return CANONICAL_STATES.includes(value as CanonicalState) ? (value as CanonicalState) : "backlog";
+  return parseCanonicalState(value, "issue state");
+}
+
+export function normalizePriority(value?: string): DashboardIssue["priority"] | undefined {
+  const trimmed = normalizeOptionalString(value);
+  return trimmed === "critical" || trimmed === "high" || trimmed === "medium" || trimmed === "low"
+    ? trimmed
+    : undefined;
 }
 
 function serializeIssue(issue: LocalIssue): DashboardIssue {
-  const priority = readPriorityMeta(issue);
-  const branchName = readIssueMeta(issue, "branchName");
-  const prUrl = readIssueMeta(issue, "prUrl");
   const description = normalizeOptionalString(issue.description);
   const assignee = normalizeOptionalString(issue.assignee);
   const url = normalizeOptionalString(issue.url);
@@ -151,10 +148,11 @@ function serializeIssue(issue: LocalIssue): DashboardIssue {
     state: issue.state,
     labels: [...issue.labels],
     ...(assignee === undefined ? {} : { assignee }),
-    ...(priority === undefined ? {} : { priority }),
-    ...(branchName === undefined ? {} : { branchName }),
-    ...(prUrl === undefined ? {} : { prUrl }),
+    ...(issue.priority === undefined ? {} : { priority: issue.priority }),
+    ...(issue.branchName === undefined ? {} : { branchName: issue.branchName }),
+    ...(issue.prUrl === undefined ? {} : { prUrl: issue.prUrl }),
     ...(url === undefined ? {} : { url }),
+    ...(issue.audit === undefined ? {} : { audit: { ...issue.audit } }),
     comments: issue.comments.map((comment) => ({ ...comment })),
     artifacts: issue.artifacts.map((artifact) => ({ ...artifact })),
     createdAt: issue.createdAt,
@@ -187,96 +185,32 @@ function serializeWorker(worker: LocalTrackerWorker): DashboardWorkerStatus {
   };
 }
 
-function readIssueMeta(issue: LocalIssue, key: string): string | undefined {
-  const value = issue.metadata[key];
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
-}
-
-function readPriorityMeta(issue: LocalIssue): DashboardIssue["priority"] | undefined {
-  const value = readIssueMeta(issue, "priority");
-  return value === "critical" || value === "high" || value === "medium" || value === "low" ? value : undefined;
-}
-
-async function readRunSummary(runDir: string): Promise<DashboardRunSummary | undefined> {
-  const status = await readJsonIfExists<{
-    runId: string;
-    workItemId: string;
-    agentType: string;
-    runtimeProvider?: string;
-    status: DashboardRunSummary["status"];
-    attemptNumber: number;
-    startedAt: string;
-    updatedAt: string;
-  }>(resolve(runDir, "status.json"));
-  if (status === undefined) {
-    return undefined;
-  }
-  const [summaryData, transcript, events] = await Promise.all([
-    readJsonIfExists<Record<string, JsonValue>>(resolve(runDir, "summary.json")),
-    readTextIfExists(resolve(runDir, "transcript.md")),
-    readEvents(resolve(runDir, "events.jsonl")),
-  ]);
-
-  const summaryText = typeof summaryData?.summary === "string"
-    ? summaryData.summary
-    : typeof summaryData?.error === "string"
-      ? summaryData.error
-      : undefined;
-  const transcriptPreview = transcript
-    ?.split("\n")
-    .map((line) => line.trim())
-    .find(Boolean);
+function serializeRunSummary(run: RunInspection | RunSummaryInspection): DashboardRunSummary {
+  const summaryText = run.summary?.summary ?? run.summary?.error;
+  const transcriptPreview = "transcript" in run
+    ? run.transcript
+      ?.split("\n")
+      .map((line) => line.trim())
+      .find(Boolean)
+    : undefined;
+  const eventCount = "events" in run ? run.events.length : 0;
 
   return {
-    runId: status.runId,
-    workItemId: status.workItemId,
-    ...(typeof summaryData?.workItem === "string" ? { workItemIdentifier: summaryData.workItem } : {}),
-    agentType: status.agentType,
-    ...(status.runtimeProvider === undefined ? {} : { runtimeProvider: status.runtimeProvider }),
-    status: status.status,
-    attemptNumber: status.attemptNumber,
-    startedAt: status.startedAt,
-    updatedAt: status.updatedAt,
+    runId: run.status.runId,
+    workItemId: run.status.workItemId,
+    ...(run.status.workItemIdentifier === undefined ? {} : { workItemIdentifier: run.status.workItemIdentifier }),
+    ...(run.status.workItemTitle === undefined ? {} : { workItemTitle: run.status.workItemTitle }),
+    agentType: run.status.agentType,
+    ...(run.status.runtimeProvider === undefined ? {} : { runtimeProvider: run.status.runtimeProvider }),
+    status: run.status.status,
+    attemptNumber: run.status.attemptNumber,
+    startedAt: run.status.startedAt,
+    updatedAt: run.status.updatedAt,
     ...(summaryText === undefined ? {} : { summary: summaryText }),
     ...(transcriptPreview === undefined ? {} : { transcriptPreview }),
-    eventCount: events.length,
+    ...(run.summary?.usedModel === undefined ? {} : { usedModel: run.summary.usedModel }),
+    eventCount,
   };
-}
-
-async function readEvents(path: string): Promise<RunDetail["events"]> {
-  const raw = await readTextIfExists(path);
-  if (raw === undefined || raw.trim() === "") {
-    return [];
-  }
-  return raw
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as {
-      timestamp: string;
-      event: string;
-      runId?: string;
-      data?: Record<string, JsonValue>;
-    })
-    .map((event) => ({
-      timestamp: event.timestamp,
-      event: event.event,
-      ...(event.runId === undefined ? {} : { runId: event.runId }),
-      ...(event.data === undefined ? {} : { data: event.data }),
-    }));
-}
-
-async function readJsonIfExists<T>(path: string): Promise<T | undefined> {
-  const raw = await readTextIfExists(path);
-  return raw === undefined ? undefined : (JSON.parse(raw) as T);
-}
-
-async function readTextIfExists(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, "utf8");
-  } catch {
-    return undefined;
-  }
 }
 
 function toJsonRecord(value: Record<string, unknown>): Record<string, JsonValue> {

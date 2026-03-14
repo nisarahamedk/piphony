@@ -16,7 +16,7 @@ class PiWorker implements RunWorker {
       agentType: "implementation",
       tracker: adapter,
       workItem: context.workItem,
-      prompt: `Use tracker_get_issue on ${context.workItem.identifier}. Then add a comment saying \"local smoke ok\". Then transition the issue to human_review. Finally reply with a one sentence summary.`,
+      prompt: `Use tracker_get_issue on ${context.workItem.identifier}. If the issue is still in todo or rework, transition it to in_progress first. Then add a comment saying \"local smoke ok\". Then transition the issue to human_review. Finally reply with a one sentence summary.`,
       onTrackerEvent: async (event) => {
         await context.logger.emit(event.event, event.details);
       },

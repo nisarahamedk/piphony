@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, Clock, Hash, LoaderCircle, Play, RefreshCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { errorMessage } from "@piphony/core/errors";
 import { ObservabilityPanel } from "./observability-panel";
 import { AppShell } from "./shell";
 import type { DashboardRunSummary, DashboardSnapshot, RunDetail } from "@/lib/models";
@@ -62,10 +63,9 @@ export function RunsPage(props: {
           setDetailError(undefined);
         }
       } catch (caught: unknown) {
-        if (!cancelled)
-          setDetailError(
-            caught instanceof Error ? caught.message : String(caught),
-          );
+        if (!cancelled) {
+          setDetailError(errorMessage(caught));
+        }
       }
     };
     void refresh();

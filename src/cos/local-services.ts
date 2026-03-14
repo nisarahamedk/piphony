@@ -1,6 +1,8 @@
+import { attemptCleanup } from "../core/cleanup.js";
 import { CANONICAL_STATES, type WorkItem } from "../core/types.js";
+import { errorMessage } from "../core/errors.js";
 import type { ActiveRunRegistry } from "../core/active-run-registry.js";
-import { inspectRun, listRuns } from "../observability/index.js";
+import { inspectRun, listRunSummaries } from "../observability/index.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import type { ChiefOfStaffBoardOverview, ChiefOfStaffIssueContext, ChiefOfStaffServices, CreateIssueInput } from "./types.js";
 
@@ -16,7 +18,7 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
   return {
     async getIssueContext(input): Promise<ChiefOfStaffIssueContext> {
       ensureProvider(input.provider);
-      const issue = await tracker.fetchWorkItemById(input.identifier);
+      const issue = await tracker.fetchWorkItemByIdentifier(input.identifier);
       const activeRun = trackerMatch(issue, options.activeRunRegistry);
       const latestRun = issue === undefined ? undefined : await findLatestRunForWorkItem(options.runsRootDir, issue.externalId);
       return {
@@ -82,13 +84,24 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
 
     async retryIssue(identifier: string, provider?: string): Promise<WorkItem> {
       ensureProvider(provider);
-      const issue = await tracker.fetchWorkItemById(identifier);
+      const issue = await tracker.fetchWorkItemByIdentifier(identifier);
       if (issue === undefined) {
         throw new Error(`Issue not found for retry: ${identifier}`);
       }
       const activeRun = options.activeRunRegistry.getByWorkItemId(issue.externalId) ?? options.activeRunRegistry.getByIdentifier(issue.identifier);
       if (activeRun?.control !== undefined) {
-        await activeRun.control.abort().catch(() => undefined);
+        await attemptCleanup(
+          "active_run.abort",
+          () => activeRun.control!.abort(),
+          (failure) => {
+            console.error("chief_of_staff_retry_abort_failed", {
+              ...failure,
+              runId: activeRun.run.runId,
+              identifier: issue.identifier,
+            });
+          },
+          activeRun.run.runId,
+        );
       }
       const nextState = issue.state === "rework" ? "rework" : "todo";
       return tracker.applyMutation(issue.externalId, { type: "transition", state: nextState });
@@ -133,14 +146,9 @@ async function nextSuggestedIdentifier(loadIssues: () => Promise<Array<{ identif
 }
 
 async function findLatestRunForWorkItem(runsRootDir: string, workItemId: string) {
-  const runIds = await listRuns(runsRootDir);
-  for (const runId of [...runIds].reverse()) {
-    const run = await inspectRun(runsRootDir, runId).catch(() => undefined);
-    if (run?.status.workItemId === workItemId) {
-      return run;
-    }
-  }
-  return undefined;
+  const runs = await listRunSummaries(runsRootDir);
+  const latest = [...runs].reverse().find((run) => run.status.workItemId === workItemId);
+  return latest;
 }
 
 function requireActiveRun(registry: ActiveRunRegistry, runId: string) {

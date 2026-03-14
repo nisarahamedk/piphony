@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import type { RuntimeExecResult, RuntimeProvider, RuntimeTarget, WorkItem } from "../../core/types.js";
-import { withOptional } from "../../core/utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -170,5 +169,5 @@ function shellQuote(value: string): string {
 }
 
 export function maybeWithEndpoints<T extends object>(base: T, endpoints: Record<string, string> | undefined): T & Partial<{ endpoints: Record<string, string> }> {
-  return withOptional(base, "endpoints", endpoints);
+  return endpoints === undefined ? base : { ...base, endpoints };
 }

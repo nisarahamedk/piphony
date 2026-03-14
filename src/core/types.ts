@@ -21,9 +21,12 @@ export const TERMINAL_WORK_ITEM_STATES = [
   "cancelled",
 ] as const;
 
+export const WORK_ITEM_PRIORITIES = ["critical", "high", "medium", "low"] as const;
+
 export type CanonicalState = (typeof CANONICAL_STATES)[number];
 export type ActiveWorkItemState = (typeof ACTIVE_WORK_ITEM_STATES)[number];
 export type TerminalWorkItemState = (typeof TERMINAL_WORK_ITEM_STATES)[number];
+export type WorkItemPriority = (typeof WORK_ITEM_PRIORITIES)[number];
 export type WorkerStatus = "idle" | "polling" | "running" | "stale" | "offline";
 
 export interface WorkItem {
@@ -35,8 +38,13 @@ export interface WorkItem {
   state: CanonicalState;
   labels: string[];
   assignee?: string;
+  priority?: WorkItemPriority;
+  branchName?: string;
+  prUrl?: string;
   url?: string;
   metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TrackerComment {
@@ -62,6 +70,7 @@ export interface TrackerAdapter {
   readonly provider: string;
   fetchCandidateWorkItems(): Promise<WorkItem[]>;
   fetchWorkItemById(id: string): Promise<WorkItem | undefined>;
+  fetchWorkItemByIdentifier(identifier: string): Promise<WorkItem | undefined>;
   fetchWorkItemsByState(states: CanonicalState[]): Promise<WorkItem[]>;
   normalize(issue: unknown): WorkItem;
   applyMutation(id: string, mutation: TrackerMutation): Promise<WorkItem>;
@@ -111,12 +120,26 @@ export interface RuntimeProvider {
 export interface RunRecord {
   runId: string;
   workItemId: string;
+  workItemIdentifier?: string;
+  workItemTitle?: string;
   agentType: string;
   runtimeProvider?: string;
   status: "created" | "running" | "completed" | "failed" | "idle";
   attemptNumber: number;
   startedAt: string;
   updatedAt: string;
+}
+
+export interface RunSummaryRecord {
+  runId: string;
+  workItemId: string;
+  workItemIdentifier?: string;
+  workItemTitle?: string;
+  status: RunRecord["status"];
+  summary?: string;
+  error?: string;
+  transcriptPath?: string;
+  usedModel?: string;
 }
 
 export interface RunWorkerResult {

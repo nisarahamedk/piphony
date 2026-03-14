@@ -2,6 +2,7 @@ import type { RunRecord, WorkItem, WorkerHeartbeat } from "./types.js";
 import type { RunArtifactIndex } from "../observability/artifact-index.js";
 
 export interface ActiveRunControlSnapshot {
+  state: "ready" | "running" | "aborting" | "disposed";
   sessionId: string;
   sessionFile?: string;
   isStreaming: boolean;
@@ -28,7 +29,6 @@ export interface ActiveRunEntry {
   artifacts: RunArtifactIndex;
   status: RunRecord["status"];
   phase?: string;
-  lastHeartbeatAt?: string;
   workerHeartbeat?: WorkerHeartbeat;
   control?: ActiveRunControl;
   lastError?: string;
@@ -98,7 +98,6 @@ export class ActiveRunRegistry {
     const next: ActiveRunEntry = {
       ...current,
       workerHeartbeat: heartbeat,
-      lastHeartbeatAt: heartbeat.lastSeenAt,
       updatedAt: heartbeat.lastSeenAt,
     };
     this.entriesByRunId.set(runId, next);
@@ -172,9 +171,8 @@ export class ActiveRunRegistry {
   }
 
   toSnapshot(entry: ActiveRunEntry, now = Date.now()): ActiveRunSnapshot {
-    const lastSeen = entry.workerHeartbeat?.lastSeenAt ?? entry.lastHeartbeatAt ?? entry.updatedAt;
-    const lastSeenMs = Date.parse(lastSeen);
-    const health = Number.isFinite(lastSeenMs) && now - lastSeenMs > ACTIVE_RUN_STALE_AFTER_MS ? "stale" : "running";
+    const lastHeartbeatAt = deriveActiveRunLastHeartbeatAt(entry);
+    const health = deriveActiveRunHealth(entry, now);
     const control = entry.control?.snapshot();
     return {
       runId: entry.run.runId,
@@ -185,7 +183,7 @@ export class ActiveRunRegistry {
       status: entry.status,
       ...(entry.phase === undefined ? {} : { phase: entry.phase }),
       health,
-      ...(entry.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: entry.lastHeartbeatAt }),
+      ...(lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt }),
       updatedAt: entry.updatedAt,
       artifacts: entry.artifacts,
       ...(control === undefined ? {} : { control }),
@@ -211,4 +209,17 @@ export class ActiveRunRegistry {
     }
     return entry;
   }
+}
+
+function deriveActiveRunLastHeartbeatAt(entry: ActiveRunEntry): string | undefined {
+  return entry.workerHeartbeat?.lastSeenAt;
+}
+
+function deriveActiveRunHealth(entry: ActiveRunEntry, now: number): ActiveRunSnapshot["health"] {
+  const lastHeartbeatAt = deriveActiveRunLastHeartbeatAt(entry);
+  if (lastHeartbeatAt === undefined) {
+    return "running";
+  }
+  const lastSeenMs = Date.parse(lastHeartbeatAt);
+  return Number.isFinite(lastSeenMs) && now - lastSeenMs > ACTIVE_RUN_STALE_AFTER_MS ? "stale" : "running";
 }

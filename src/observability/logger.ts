@@ -1,6 +1,6 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { EventRecord, RunRecord } from "../core/types.js";
+import type { EventRecord, RunRecord, RunSummaryRecord } from "../core/types.js";
 import { ensureDir, nowIso, writeJson } from "../core/utils.js";
 
 export interface RunArtifacts {
@@ -53,7 +53,7 @@ export class RunLogger {
     await writeJson(this.artifacts.statusPath, run);
   }
 
-  async writeSummary(summary: Record<string, unknown>): Promise<void> {
+  async writeSummary(summary: RunSummaryRecord): Promise<void> {
     await writeJson(this.artifacts.summaryPath, summary);
   }
 
@@ -68,13 +68,19 @@ export class RunLogger {
   async readEvents(): Promise<EventRecord[]> {
     try {
       const raw = await readFile(this.artifacts.eventsPath, "utf8");
+      if (raw.trim() === "") {
+        return [];
+      }
       return raw
         .trim()
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as EventRecord);
-    } catch {
-      return [];
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return [];
+      }
+      throw error;
     }
   }
 }

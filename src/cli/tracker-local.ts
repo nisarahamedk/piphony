@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
-import { isCanonicalState } from "../core/utils.js";
+import { errorMessage } from "../core/errors.js";
+import { parseCanonicalState } from "../core/work-item-transitions.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { defaultTrackerDir, resetTrackerState } from "../tracker/local/harness.js";
 
@@ -28,20 +29,18 @@ async function main(): Promise<void> {
       const identifier = requireValue(getFlag(args, "--identifier"), "--identifier is required");
       const title = requireValue(getFlag(args, "--title"), "--title is required");
       const description = getFlag(args, "--description");
-      const rawState = getFlag(args, "--state", "backlog") ?? "backlog";
-      if (!isCanonicalState(rawState)) throw new Error(`Invalid state: ${rawState}`);
+      const state = parseCanonicalState(getFlag(args, "--state", "backlog") ?? "backlog");
       const issue = await adapter.store.createIssue(
         description === undefined
-          ? { identifier, title, state: rawState, labels: [] }
-          : { identifier, title, description, state: rawState, labels: [] },
+          ? { identifier, title, state, labels: [] }
+          : { identifier, title, description, state, labels: [] },
       );
       console.log(JSON.stringify(issue, null, 2));
       return;
     }
     case "move": {
       const issue = requireValue(args[1], "Issue identifier required");
-      const state = requireValue(args[2], "Target state required");
-      if (!isCanonicalState(state)) throw new Error(`Invalid state: ${state}`);
+      const state = parseCanonicalState(requireValue(args[2], "Target state required"));
       console.log(JSON.stringify(await adapter.applyMutation(issue, { type: "transition", state }), null, 2));
       return;
     }
@@ -86,6 +85,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(errorMessage(error));
   process.exitCode = 1;
 });

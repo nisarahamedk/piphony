@@ -1,25 +1,22 @@
-import { randomUUID } from "node:crypto";
 import { createServerFn } from "@tanstack/react-start";
 import { nowIso } from "@piphony/core/utils";
-import {
-  getTrackerStore,
-  nextSuggestedIdentifier,
-  normalizeLabels,
-  normalizeOptionalString,
-  normalizeState,
-  readDashboardSnapshot,
-  readRunDetail,
-  readRunsIndex,
-} from "./piphony-data";
+import { assertValidWorkItemTransition, parseCanonicalState } from "@piphony/core/work-item-transitions";
 import type { AddCommentInput, CreateIssueInput, TransitionIssueInput, UpdateIssueInput } from "../models";
 
-export const getDashboardSnapshot = createServerFn({ method: "GET" }).handler(async () => readDashboardSnapshot());
+export const getDashboardSnapshot = createServerFn({ method: "GET" }).handler(async () => {
+  const { readDashboardSnapshot } = await loadServerDataModule();
+  return readDashboardSnapshot();
+});
 
-export const getRunsSnapshot = createServerFn({ method: "GET" }).handler(async () => readRunsIndex());
+export const getRunsSnapshot = createServerFn({ method: "GET" }).handler(async () => {
+  const { readRunsIndex } = await loadServerDataModule();
+  return readRunsIndex();
+});
 
 export const getRunDetail = createServerFn({ method: "GET" })
   .inputValidator((input: { runId: string }) => input)
   .handler(async ({ data }) => {
+    const { readRunDetail } = await loadServerDataModule();
     const payload = data as { runId?: unknown } | undefined;
     const runId = typeof payload?.runId === "string" ? payload.runId : "";
     return runId === "" ? undefined : readRunDetail(runId);
@@ -34,10 +31,18 @@ export const createIssue = createServerFn({ method: "POST" })
       throw new Error("Issue title is required");
     }
 
+    const {
+      getTrackerStore,
+      nextSuggestedIdentifier,
+      normalizeLabels,
+      normalizeOptionalString,
+      normalizePriority,
+      readDashboardSnapshot,
+    } = await loadServerDataModule();
     const identifier = normalizeOptionalString(input.identifier) ?? await nextSuggestedIdentifier();
     const description = normalizeOptionalString(input.description);
     const assignee = normalizeOptionalString(input.assignee);
-    const priority = normalizeOptionalString(input.priority);
+    const priority = normalizePriority(input.priority);
     const branchName = normalizeOptionalString(input.branchName);
     const prUrl = normalizeOptionalString(input.prUrl);
     const store = getTrackerStore();
@@ -48,10 +53,10 @@ export const createIssue = createServerFn({ method: "POST" })
       state: "backlog",
       labels: normalizeLabels(input.labels),
       ...(assignee === undefined ? {} : { assignee }),
-      metadata: {
-        ...(priority === undefined ? {} : { priority }),
-        ...(branchName === undefined ? {} : { branchName }),
-        ...(prUrl === undefined ? {} : { prUrl }),
+      ...(priority === undefined ? {} : { priority }),
+      ...(branchName === undefined ? {} : { branchName }),
+      ...(prUrl === undefined ? {} : { prUrl }),
+      audit: {
         createdFrom: "piphony_web",
         createdBy: "human",
         createdViaUiAt: nowIso(),
@@ -74,6 +79,14 @@ export const updateIssue = createServerFn({ method: "POST" })
       throw new Error("Issue title is required");
     }
 
+    const {
+      getTrackerStore,
+      normalizeLabels,
+      normalizeOptionalString,
+      normalizePriority,
+      readDashboardSnapshot,
+    } = await loadServerDataModule();
+    const nextState = parseCanonicalState(input.state, "issue state");
     const store = getTrackerStore();
     await store.updateIssue(id, (issue) => {
       issue.title = title;
@@ -90,29 +103,33 @@ export const updateIssue = createServerFn({ method: "POST" })
       } else {
         issue.assignee = assignee;
       }
-      issue.state = normalizeState(input.state);
+      assertValidWorkItemTransition(issue.state, nextState);
+      issue.state = nextState;
 
-      const priority = normalizeOptionalString(input.priority);
+      const priority = normalizePriority(input.priority);
       const branchName = normalizeOptionalString(input.branchName);
       const prUrl = normalizeOptionalString(input.prUrl);
 
       if (priority === undefined) {
-        delete issue.metadata.priority;
+        delete issue.priority;
       } else {
-        issue.metadata.priority = priority;
+        issue.priority = priority;
       }
       if (branchName === undefined) {
-        delete issue.metadata.branchName;
+        delete issue.branchName;
       } else {
-        issue.metadata.branchName = branchName;
+        issue.branchName = branchName;
       }
       if (prUrl === undefined) {
-        delete issue.metadata.prUrl;
+        delete issue.prUrl;
       } else {
-        issue.metadata.prUrl = prUrl;
+        issue.prUrl = prUrl;
       }
-      issue.metadata.updatedFrom = "piphony_web";
-      issue.metadata.updatedViaUiAt = nowIso();
+      issue.audit = {
+        ...(issue.audit ?? {}),
+        updatedFrom: "piphony_web",
+        updatedViaUiAt: nowIso(),
+      };
     });
 
     return readDashboardSnapshot();
@@ -131,17 +148,20 @@ export const appendIssueComment = createServerFn({ method: "POST" })
       throw new Error("Comment body is required");
     }
 
+    const { getTrackerStore, normalizeOptionalString, readDashboardSnapshot } = await loadServerDataModule();
     const store = getTrackerStore();
-    await store.updateIssue(id, (issue) => {
-      issue.comments.push({
-        id: randomUUID(),
-        body,
-        author: normalizeOptionalString(input.author) ?? "human",
-        createdAt: nowIso(),
-      });
-      issue.metadata.lastCommentedFrom = "piphony_web";
-      issue.metadata.lastCommentedAt = nowIso();
+    const createdAt = nowIso();
+    await store.appendIssueComment(id, {
+      id: crypto.randomUUID(),
+      body,
+      author: normalizeOptionalString(input.author) ?? "human",
+      createdAt,
     });
+    await store.updateIssueAudit(id, (audit) => ({
+      ...audit,
+      lastCommentedFrom: "piphony_web",
+      lastCommentedAt: createdAt,
+    }));
     return readDashboardSnapshot();
   });
 
@@ -154,12 +174,23 @@ export const transitionIssue = createServerFn({ method: "POST" })
       throw new Error("Issue id is required");
     }
 
-    const state = normalizeState(input.state);
+    const { getTrackerStore, readDashboardSnapshot } = await loadServerDataModule();
+    const nextState = parseCanonicalState(input.state, "issue state");
     const store = getTrackerStore();
-    await store.updateIssue(id, (issue) => {
-      issue.state = state;
-      issue.metadata.updatedFrom = "piphony_web";
-      issue.metadata.updatedViaUiAt = nowIso();
-    });
+    const current = await store.findIssue(id);
+    if (current === undefined) {
+      throw new Error(`Issue not found: ${id}`);
+    }
+    assertValidWorkItemTransition(current.state, nextState);
+    await store.transitionIssue(id, nextState);
+    await store.updateIssueAudit(id, (audit) => ({
+      ...audit,
+      updatedFrom: "piphony_web",
+      updatedViaUiAt: nowIso(),
+    }));
     return readDashboardSnapshot();
   });
+
+async function loadServerDataModule() {
+  return import("./piphony-data");
+}

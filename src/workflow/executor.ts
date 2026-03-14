@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { RunLogger } from "../observability/logger.js";
+import { errorMessage } from "../core/errors.js";
 import type { RuntimeProvider } from "../core/types.js";
 import type { WorkflowDefinition, WorkflowPhaseDefinition, WorkflowPhaseName } from "./types.js";
 
@@ -51,7 +52,7 @@ export class WorkflowExecutor {
         outputPreview: output.slice(-500),
       });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       await this.logger?.emit("workflow.phase.failed", {
         phase: name,
         scope: phase.scope,

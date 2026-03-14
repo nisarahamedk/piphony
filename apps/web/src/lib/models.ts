@@ -16,6 +16,7 @@ export interface DashboardRunSummary {
   updatedAt: string;
   summary?: string;
   transcriptPreview?: string;
+  usedModel?: string;
   eventCount: number;
 }
 
@@ -33,6 +34,16 @@ export interface DashboardIssueArtifact {
   createdAt: string;
 }
 
+export interface DashboardIssueAudit {
+  createdFrom?: string;
+  createdBy?: string;
+  createdViaUiAt?: string;
+  updatedFrom?: string;
+  updatedViaUiAt?: string;
+  lastCommentedFrom?: string;
+  lastCommentedAt?: string;
+}
+
 export interface DashboardIssue {
   id: string;
   identifier: string;
@@ -45,6 +56,7 @@ export interface DashboardIssue {
   branchName?: string;
   prUrl?: string;
   url?: string;
+  audit?: DashboardIssueAudit;
   comments: DashboardIssueComment[];
   artifacts: DashboardIssueArtifact[];
   createdAt: string;

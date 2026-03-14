@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { attemptCleanup, errorMessage } from "../core/index.js";
 import { startLocalPiphonyStack } from "../stack/local-stack.js";
 
 const repoRoot = resolve(process.cwd());
@@ -24,9 +25,13 @@ async function main() {
     stopping = true;
     console.log(`Piphony dev stack stopping (${signal})`);
     web.kill("SIGTERM");
-    await stack.stop().catch((error) => {
-      console.error("dev_stack_shutdown_error", error instanceof Error ? error.message : String(error));
-    });
+    await attemptCleanup(
+      "dev_stack.stop",
+      () => stack.stop(),
+      (failure) => {
+        console.error("dev_stack_shutdown_error", failure);
+      },
+    );
     process.exit(0);
   };
 
@@ -51,6 +56,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error("dev_stack_start_error", errorMessage(error));
   process.exit(1);
 });

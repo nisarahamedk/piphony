@@ -1,7 +1,4 @@
 import type { AgentSessionEvent, PromptOptions } from "@mariozechner/pi-coding-agent";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import type { TrackerAdapter, RuntimeProvider, WorkItem } from "../core/types.js";
-import type { ThinkingLevel } from "./agent-types.js";
 import type { ProviderCapacityService, ProviderCapacitySnapshot, ProviderSchedulingKey } from "./provider-middleware.js";
 import { createPiSession, type PiSessionFactoryOptions } from "./session-factory.js";
 
@@ -12,7 +9,10 @@ export interface PiTurnResult {
   usedModel?: string;
 }
 
+export type PiSessionLifecycleStateKind = "ready" | "running" | "aborting" | "disposed";
+
 export interface PiSessionSnapshot {
+  state: PiSessionLifecycleStateKind;
   sessionId: string;
   sessionFile?: string;
   isStreaming: boolean;
@@ -31,6 +31,12 @@ export class PiSessionAbortedError extends Error {
     this.name = "PiSessionAbortedError";
   }
 }
+
+type ControllerLifecycleState =
+  | { kind: "ready" }
+  | { kind: "running"; turnPromise: Promise<PiTurnResult> }
+  | { kind: "aborting"; turnPromise: Promise<PiTurnResult> }
+  | { kind: "disposed" };
 
 function getLastAssistantError(messages: any[]): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -51,9 +57,8 @@ function getLastAssistantError(messages: any[]): string | undefined {
 export class PiSessionController {
   private readonly listeners = new Set<(event: AgentSessionEvent) => void>();
   private readonly unsubscribe: () => void;
-  private activeTurnPromise: Promise<PiTurnResult> | undefined;
+  private lifecycle: ControllerLifecycleState = { kind: "ready" };
   private abortedDuringTurn = false;
-  private disposed = false;
 
   private constructor(
     private readonly session: any,
@@ -73,7 +78,17 @@ export class PiSessionController {
     return new PiSessionController(session, usedModel, options.providerCapacityService, schedulingKey);
   }
 
+  static fromCreatedSession(input: {
+    session: any;
+    usedModel?: string;
+    providerCapacityService?: ProviderCapacityService;
+    schedulingKey?: ProviderSchedulingKey;
+  }): PiSessionController {
+    return new PiSessionController(input.session, input.usedModel, input.providerCapacityService, input.schedulingKey);
+  }
+
   subscribe(listener: (event: AgentSessionEvent) => void): () => void {
+    this.assertNotDisposed();
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -81,15 +96,10 @@ export class PiSessionController {
   }
 
   async runPrompt(text: string, options?: PromptOptions): Promise<PiTurnResult> {
-    if (this.disposed) {
-      throw new Error("Pi session controller is disposed");
-    }
-    if (this.activeTurnPromise !== undefined) {
-      throw new Error("Pi session controller already has an active turn");
-    }
-
+    this.assertState("ready", "Pi session controller is not ready for a new turn");
     this.abortedDuringTurn = false;
-    this.activeTurnPromise = (async () => {
+
+    const turnPromise = (async () => {
       try {
         if (this.abortedDuringTurn) {
           throw new PiSessionAbortedError();
@@ -106,54 +116,58 @@ export class PiSessionController {
         const output = this.session.getLastAssistantText() ?? "";
         return this.usedModel === undefined ? { output } : { output, usedModel: this.usedModel };
       } finally {
-        this.activeTurnPromise = undefined;
+        if (this.lifecycle.kind !== "disposed") {
+          this.lifecycle = { kind: "ready" };
+        }
       }
     })();
 
-    return this.activeTurnPromise;
+    this.lifecycle = { kind: "running", turnPromise };
+    return turnPromise;
   }
 
   snapshot(): PiSessionSnapshot {
-    return this.usedModel === undefined
-      ? {
-          sessionId: this.session.sessionId,
-          ...(this.session.sessionFile === undefined ? {} : { sessionFile: this.session.sessionFile }),
-          isStreaming: this.session.isStreaming,
-          pendingMessageCount: this.session.pendingMessageCount,
-          steeringMessages: this.session.getSteeringMessages(),
-          followUpMessages: this.session.getFollowUpMessages(),
-          ...(this.session.getLastAssistantText() === undefined ? {} : { lastAssistantText: this.session.getLastAssistantText() }),
-          messageCount: this.session.messages.length,
-          thinkingLevel: this.session.thinkingLevel,
-        }
-      : {
-          sessionId: this.session.sessionId,
-          ...(this.session.sessionFile === undefined ? {} : { sessionFile: this.session.sessionFile }),
-          isStreaming: this.session.isStreaming,
-          pendingMessageCount: this.session.pendingMessageCount,
-          steeringMessages: this.session.getSteeringMessages(),
-          followUpMessages: this.session.getFollowUpMessages(),
-          ...(this.session.getLastAssistantText() === undefined ? {} : { lastAssistantText: this.session.getLastAssistantText() }),
-          messageCount: this.session.messages.length,
-          thinkingLevel: this.session.thinkingLevel,
-          usedModel: this.usedModel,
-        };
+    const snapshot: PiSessionSnapshot = {
+      state: this.lifecycle.kind,
+      sessionId: this.session.sessionId,
+      ...(this.session.sessionFile === undefined ? {} : { sessionFile: this.session.sessionFile }),
+      isStreaming: this.session.isStreaming,
+      pendingMessageCount: this.session.pendingMessageCount,
+      steeringMessages: this.session.getSteeringMessages(),
+      followUpMessages: this.session.getFollowUpMessages(),
+      ...(this.session.getLastAssistantText() === undefined ? {} : { lastAssistantText: this.session.getLastAssistantText() }),
+      messageCount: this.session.messages.length,
+      thinkingLevel: this.session.thinkingLevel,
+      ...(this.usedModel === undefined ? {} : { usedModel: this.usedModel }),
+    };
+    return snapshot;
   }
 
   async steer(text: string): Promise<void> {
+    this.assertState(["running", "aborting"], "Pi session controller is not running");
     await this.session.steer(text);
   }
 
   async followUp(text: string): Promise<void> {
+    this.assertState(["running", "aborting"], "Pi session controller is not running");
     await this.session.followUp(text);
   }
 
   async abort(): Promise<void> {
+    if (this.lifecycle.kind === "aborting") {
+      return;
+    }
+    if (this.lifecycle.kind !== "running") {
+      throw new Error("Pi session controller has no active turn to abort");
+    }
+    const turnPromise = this.lifecycle.turnPromise;
     this.abortedDuringTurn = true;
+    this.lifecycle = { kind: "aborting", turnPromise };
     await this.session.abort();
   }
 
   async waitForIdle(): Promise<void> {
+    this.assertNotDisposed();
     await this.session.agent.waitForIdle();
   }
 
@@ -164,11 +178,25 @@ export class PiSessionController {
   }
 
   async dispose(): Promise<void> {
-    if (this.disposed) {
+    if (this.lifecycle.kind === "disposed") {
       return;
     }
-    this.disposed = true;
+    this.lifecycle = { kind: "disposed" };
     this.unsubscribe();
     this.session.dispose();
+  }
+
+  private assertNotDisposed(): void {
+    if (this.lifecycle.kind === "disposed") {
+      throw new Error("Pi session controller is disposed");
+    }
+  }
+
+  private assertState(expected: PiSessionLifecycleStateKind | PiSessionLifecycleStateKind[], message: string): void {
+    const expectedStates = Array.isArray(expected) ? expected : [expected];
+    if (expectedStates.includes(this.lifecycle.kind)) {
+      return;
+    }
+    throw new Error(message);
   }
 }

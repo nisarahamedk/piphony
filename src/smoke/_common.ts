@@ -1,18 +1,17 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { ensureDir, inspectLatestRun, inspectRun } from "../index.js";
-import { defaultTrackerDir } from "../tracker/local/harness.js";
+import { resolveRepoPaths } from "../config/repo-paths.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-export const repoRoot = resolve(__dirname, "../..");
-export const runsRootDir = join(repoRoot, ".piphony", "runs");
-export const trackerDir = defaultTrackerDir(repoRoot);
+const repoPaths = resolveRepoPaths();
+export const repoRoot = repoPaths.repoRoot;
+export const runsRootDir = repoPaths.runsRootDir;
+export const trackerDir = repoPaths.trackerDir;
 
 export async function ensureBaseDirs(): Promise<void> {
   await ensureDir(runsRootDir);
-  await ensureDir(join(repoRoot, ".piphony"));
+  await ensureDir(repoPaths.piphonyRoot);
 }
 
 export async function makeTempDir(prefix: string): Promise<string> {

@@ -1,6 +1,6 @@
 import type { ActiveRunEntry, ActiveRunSnapshot } from "../core/active-run-registry.js";
 import type { WorkItem } from "../core/types.js";
-import type { RunInspection } from "../observability/index.js";
+import type { RunInspection, RunSummaryInspection } from "../observability/index.js";
 
 export type TrackerPageContext = IssuePageContext | BoardPageContext;
 
@@ -22,7 +22,7 @@ export interface BoardPageContext {
 export interface ChiefOfStaffIssueContext {
   issue?: WorkItem;
   activeRun?: ActiveRunEntry;
-  latestRun?: RunInspection;
+  latestRun?: RunSummaryInspection | RunInspection;
 }
 
 export interface ChiefOfStaffBoardOverview {

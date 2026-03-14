@@ -1,8 +1,7 @@
-import { join } from "node:path";
 import { hostname } from "node:os";
 import { createRunArtifactIndex } from "../observability/artifact-index.js";
 import { RunLogger, type RunArtifacts } from "../observability/logger.js";
-import { WorkflowExecutor } from "../workflow/executor.js";
+import { executeOrchestratorRun } from "./orchestrator-run-executor.js";
 import type { WorkflowDefinition } from "../workflow/types.js";
 import {
   ACTIVE_WORK_ITEM_STATES,
@@ -16,7 +15,8 @@ import {
   type WorkerHeartbeat,
 } from "./types.js";
 import type { ActiveRunRegistry } from "./active-run-registry.js";
-import { createRunId, nowIso, withOptional } from "./utils.js";
+import { errorMessage } from "./errors.js";
+import { createRunId, nowIso } from "./utils.js";
 
 export interface RunWorkerContext {
   workItem: WorkItem;
@@ -97,6 +97,7 @@ export class Orchestrator {
   }
 
   async pollOnce(): Promise<OrchestratorSnapshot> {
+    this.assertNotOffline("Cannot poll orchestrator after shutdown");
     this.status = "polling";
     this.nextPollAt = undefined;
     await this.flushSnapshot();
@@ -134,6 +135,7 @@ export class Orchestrator {
   }
 
   async runOnce(): Promise<RunOnceResult> {
+    this.assertNotOffline("Cannot run orchestrator after shutdown");
     const workItem = this.options.workItemId === undefined
       ? await this.selectCandidateWorkItem()
       : await this.selectExplicitWorkItem(this.options.workItemId);
@@ -141,22 +143,24 @@ export class Orchestrator {
     if (workItem === undefined) {
       const runId = createRunId("idle");
       const logger = new RunLogger(this.options.runsRootDir, runId, true);
-      const idleRun = withOptional<RunRecord, "runtimeProvider", string>(
-        {
-          runId,
-          workItemId: "none",
-          agentType: this.options.agentType ?? this.options.worker.name,
-          status: "idle",
-          attemptNumber: this.options.attemptNumber ?? 1,
-          startedAt: nowIso(),
-          updatedAt: nowIso(),
-        },
-        "runtimeProvider",
-        this.options.runtimeProvider?.name,
-      );
+      const idleRun: RunRecord = {
+        runId,
+        workItemId: "none",
+        agentType: this.options.agentType ?? this.options.worker.name,
+        ...(this.options.runtimeProvider === undefined ? {} : { runtimeProvider: this.options.runtimeProvider.name }),
+        status: "idle",
+        attemptNumber: this.options.attemptNumber ?? 1,
+        startedAt: nowIso(),
+        updatedAt: nowIso(),
+      };
       await logger.init(idleRun);
       await logger.emit("run.idle", { provider: this.options.tracker.provider });
-      await logger.writeSummary({ status: "idle", reason: "no_candidate_work_items" });
+      await logger.writeSummary({
+        runId,
+        workItemId: "none",
+        status: "idle",
+        summary: "no_candidate_work_items",
+      });
       return { run: idleRun, logger };
     }
 
@@ -246,7 +250,7 @@ export class Orchestrator {
       });
     } catch (error) {
       entry.error = error;
-      this.options.activeRunRegistry?.updateError(entry.run.runId, error instanceof Error ? error.message : String(error));
+      this.options.activeRunRegistry?.updateError(entry.run.runId, errorMessage(error));
     } finally {
       entry.settled = true;
       entry.workerHeartbeat = {
@@ -296,19 +300,18 @@ export class Orchestrator {
   }
 
   private createRunRecord(workItem: WorkItem): RunRecord {
-    return withOptional<RunRecord, "runtimeProvider", string>(
-      {
-        runId: createRunId(),
-        workItemId: workItem.externalId,
-        agentType: this.options.agentType ?? this.options.worker.name,
-        status: "created",
-        attemptNumber: this.options.attemptNumber ?? 1,
-        startedAt: nowIso(),
-        updatedAt: nowIso(),
-      },
-      "runtimeProvider",
-      this.options.runtimeProvider?.name,
-    );
+    return {
+      runId: createRunId(),
+      workItemId: workItem.externalId,
+      workItemIdentifier: workItem.identifier,
+      workItemTitle: workItem.title,
+      agentType: this.options.agentType ?? this.options.worker.name,
+      ...(this.options.runtimeProvider === undefined ? {} : { runtimeProvider: this.options.runtimeProvider.name }),
+      status: "created",
+      attemptNumber: this.options.attemptNumber ?? 1,
+      startedAt: nowIso(),
+      updatedAt: nowIso(),
+    };
   }
 
   private async executeWorkItem(input: {
@@ -317,116 +320,14 @@ export class Orchestrator {
     logger: RunLogger;
     heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
   }): Promise<RunWorkerResult> {
-    const { workItem, run, logger, heartbeat } = input;
-
-    await logger.emit("run.created", {
-      identifier: workItem.identifier,
-      title: workItem.title,
-      state: workItem.state,
+    return executeOrchestratorRun({
+      ...input,
+      worker: this.options.worker,
+      ...(this.options.runtimeProvider === undefined ? {} : { runtimeProvider: this.options.runtimeProvider }),
+      ...(this.options.workflow === undefined ? {} : { workflow: this.options.workflow }),
+      ...(this.options.repoRoot === undefined ? {} : { repoRoot: this.options.repoRoot }),
+      ...(this.options.activeRunRegistry === undefined ? {} : { activeRunRegistry: this.options.activeRunRegistry }),
     });
-    await heartbeat?.({ phase: "created" });
-
-    let workflowExecutor: WorkflowExecutor | undefined;
-    if (this.options.runtimeProvider !== undefined) {
-      await this.options.runtimeProvider.prepare({ runId: run.runId, workItem });
-      await this.options.runtimeProvider.start();
-      await this.options.runtimeProvider.waitUntilReady();
-      await logger.emit("runtime.ready", { provider: this.options.runtimeProvider.name });
-      await heartbeat?.({ phase: "runtime_ready" });
-      if (this.options.workflow !== undefined) {
-        if (this.options.repoRoot === undefined) {
-          throw new Error("repoRoot is required when workflow is configured");
-        }
-        workflowExecutor = new WorkflowExecutor({
-          repoRoot: this.options.repoRoot,
-          workflow: this.options.workflow,
-          runtimeProvider: this.options.runtimeProvider,
-          logger,
-        });
-        await workflowExecutor.runPhase("prepare");
-        await heartbeat?.({ phase: "prepare_complete" });
-      }
-    }
-
-    run.status = "running";
-    run.updatedAt = nowIso();
-    this.options.activeRunRegistry?.updateStatus(run.runId, run.status);
-    await logger.writeStatus(run);
-    await logger.emit("agent.turn.started", { worker: this.options.worker.name });
-    await heartbeat?.({ phase: "running" });
-
-    let result: RunWorkerResult | undefined;
-    let thrownError: unknown;
-
-    try {
-      const contextBase = {
-        workItem,
-        run,
-        logger,
-        runArtifacts: logger.artifacts,
-        ...(heartbeat === undefined ? {} : { heartbeat }),
-        ...(this.options.activeRunRegistry === undefined ? {} : { activeRunRegistry: this.options.activeRunRegistry }),
-      };
-      const context = this.options.runtimeProvider === undefined
-        ? contextBase
-        : { ...contextBase, runtimeProvider: this.options.runtimeProvider };
-      result = await this.options.worker.execute(context);
-      await workflowExecutor?.runPhase("validate");
-      run.status = "completed";
-      run.updatedAt = nowIso();
-      this.options.activeRunRegistry?.updateStatus(run.runId, run.status);
-      this.options.activeRunRegistry?.updateSummary(run.runId, result.summary);
-      await logger.writeStatus(run);
-      if (result.output !== undefined) {
-        await logger.writeTranscript(result.output);
-      }
-      await logger.emit("run.completed", { summary: result.summary });
-      await logger.writeSummary({
-        runId: run.runId,
-        workItem: workItem.identifier,
-        status: run.status,
-        summary: result.summary,
-        transcriptPath: join(logger.artifacts.runDir, "transcript.md"),
-      });
-      await heartbeat?.({ phase: "completed", summary: result.summary });
-      return result;
-    } catch (error) {
-      thrownError = error;
-      run.status = "failed";
-      run.updatedAt = nowIso();
-      this.options.activeRunRegistry?.updateStatus(run.runId, run.status);
-      this.options.activeRunRegistry?.updateError(run.runId, error instanceof Error ? error.message : String(error));
-      await logger.writeStatus(run);
-      await logger.emit("run.failed", {
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-      await logger.writeSummary({
-        runId: run.runId,
-        workItem: workItem.identifier,
-        status: run.status,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      await heartbeat?.({ phase: "failed", error: error instanceof Error ? error.message : String(error) });
-      throw error;
-    } finally {
-      if (workflowExecutor !== undefined) {
-        try {
-          await workflowExecutor.runPhase("teardown");
-        } catch (teardownError) {
-          await logger.emit("workflow.teardown.failed", {
-            message: teardownError instanceof Error ? teardownError.message : String(teardownError),
-          });
-          if (thrownError === undefined) {
-            throw teardownError;
-          }
-        }
-      }
-      if (this.options.runtimeProvider !== undefined) {
-        await this.options.runtimeProvider.stop().catch(() => undefined);
-        await this.options.runtimeProvider.destroy().catch(() => undefined);
-      }
-    }
   }
 
   private snapshot(): OrchestratorSnapshot {
@@ -446,6 +347,12 @@ export class Orchestrator {
   private async flushSnapshot(): Promise<void> {
     await this.options.statusSink?.syncSnapshot(this.snapshot());
   }
+
+  private assertNotOffline(message: string): void {
+    if (this.status === "offline") {
+      throw new Error(message);
+    }
+  }
 }
 
 export class StubWorker implements RunWorker {
@@ -462,15 +369,13 @@ export class StubWorker implements RunWorker {
 }
 
 function compareWorkItems(left: WorkItem, right: WorkItem): number {
-  const leftPriority = priorityRank(left.metadata.priority);
-  const rightPriority = priorityRank(right.metadata.priority);
+  const leftPriority = priorityRank(left.priority);
+  const rightPriority = priorityRank(right.priority);
   if (leftPriority !== rightPriority) {
     return leftPriority - rightPriority;
   }
 
-  const leftCreated = typeof left.metadata.createdAt === "string" ? left.metadata.createdAt : "9999";
-  const rightCreated = typeof right.metadata.createdAt === "string" ? right.metadata.createdAt : "9999";
-  return leftCreated.localeCompare(rightCreated);
+  return left.createdAt.localeCompare(right.createdAt);
 }
 
 function priorityRank(value: unknown): number {

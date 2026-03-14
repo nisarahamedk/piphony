@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { errorMessage } from "../core/errors.js";
 import { ensureDir } from "../core/utils.js";
 
 export interface ProgressSections {
@@ -41,7 +42,10 @@ export async function ensureProgressFile(workspacePath: string, sections: Progre
 export async function readProgressFile(workspacePath: string): Promise<string | undefined> {
   try {
     return await readFile(progressFilePath(workspacePath), "utf8");
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw new Error(`Failed to read progress file ${progressFilePath(workspacePath)}: ${errorMessage(error)}`);
   }
 }

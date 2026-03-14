@@ -12,6 +12,7 @@ import { resetTrackerState } from "../src/tracker/local/harness.js";
 function makeControl(input?: { onAbort?: () => void }): ActiveRunControl {
   return {
     snapshot: () => ({
+      state: "running",
       sessionId: "session-1",
       isStreaming: false,
       pendingMessageCount: 0,
