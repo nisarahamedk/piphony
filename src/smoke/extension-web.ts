@@ -105,11 +105,11 @@ async function waitForHttp(url: string, attempts = 180): Promise<void> {
 }
 
 async function killExistingWebServer(): Promise<void> {
-  await attemptCleanup("smoke.extension_web.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts'", 10_000).then(() => undefined));
+  await attemptCleanup("smoke.extension_web.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
 }
 
 async function killExistingOrchestratorWatch(): Promise<void> {
-  await attemptCleanup("smoke.extension_web.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", 10_000).then(() => undefined));
+  await attemptCleanup("smoke.extension_web.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
 }
 
 function startWebServer() {

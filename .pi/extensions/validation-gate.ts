@@ -3,16 +3,25 @@
  *
  * Automatically runs validation after mutating agent runs and feeds failures back
  * to the agent. Prevents false "done" states by ensuring the canonical
- * validation suite passes before work is treated as complete.
+ * validation suites pass before work is treated as complete.
  *
  * Disable via: PIPHONY_VALIDATION_GATE=0
- * Max auto-fix retries: 3
+ * Deterministic auto-fix retries: 3
  * Artifacts: .piphony/validation/<timestamp>/
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  analyzeValidationResult,
+  DETERMINISTIC_VALIDATION_COMMANDS,
+  LIVE_VALIDATION_COMMANDS,
+  type ExternalDependencyBlocker,
+  type ValidationCommandSpec,
+  type ValidationLaneKind,
+  type ValidationResultClassification,
+} from "../../src/validation/validation-gate.ts";
 
 interface ValidationState {
   validationInProgress: boolean;
@@ -21,33 +30,24 @@ interface ValidationState {
 }
 
 interface ValidationResult {
+  lane: ValidationLaneKind;
   command: string;
   exitCode: number;
   stdout: string;
   stderr: string;
+  classification: ValidationResultClassification;
   skipped: boolean;
   skipReason?: string;
+  blocker?: ExternalDependencyBlocker;
 }
 
 interface ValidationSummary {
   timestamp: string;
   agentRun: number;
   passed: boolean;
-  retryCount: number;
   artifactDir: string;
   results: ValidationResult[];
 }
-
-const VALIDATION_COMMANDS = [
-  "npm run typecheck",
-  "npm test",
-  "npm run build:extension",
-  "npm run smoke:web",
-  "npm run smoke:stack",
-  "npm run smoke:observability",
-  "npm run smoke:tracker-local",
-  "npm run smoke:session-control",
-] as const;
 
 const MAX_RETRIES = 3;
 const DISABLE_ENV_VAR = "PIPHONY_VALIDATION_GATE";
@@ -128,42 +128,20 @@ async function writeArtifact(dir: string, name: string, content: string): Promis
   return path;
 }
 
-function extractStructuredJson(raw: string): unknown | undefined {
-  const lines = raw.trim().split(/\r?\n/);
-  for (let start = lines.length - 1; start >= 0; start -= 1) {
-    const candidate = lines.slice(start).join("\n").trim();
-    if (!candidate.startsWith("{")) {
-      continue;
-    }
-    try {
-      return JSON.parse(candidate) as unknown;
-    } catch {
-      // try earlier start line
-    }
-  }
-  return undefined;
-}
-
-function parseExpectedSkip(raw: string): { skipped: boolean; skipReason?: string } {
-  const parsed = extractStructuredJson(raw);
-  if (parsed === undefined || parsed === null || typeof parsed !== "object") {
-    return { skipped: false };
-  }
-  const record = parsed as Record<string, unknown>;
-  if (record.ok === true && record.skipped === true) {
-    return {
-      skipped: true,
-      skipReason: typeof record.reason === "string" ? record.reason : "skipped",
-    };
-  }
-  return { skipped: false };
-}
-
-function formatCommandLog(command: string, result: ValidationResult): string {
+function formatCommandLog(result: ValidationResult): string {
   return [
-    `Command: ${command}`,
+    `Lane: ${result.lane}`,
+    `Command: ${result.command}`,
     `Exit Code: ${result.exitCode}`,
+    `Classification: ${result.classification}`,
     ...(result.skipped ? [`Skipped: true`, `Skip Reason: ${result.skipReason ?? "unknown"}`] : []),
+    ...(result.blocker === undefined
+      ? []
+      : [
+          `External Blocker: ${result.blocker.code}`,
+          `Blocker Headline: ${result.blocker.headline}`,
+          `Escalation Hint: ${result.blocker.escalationHint}`,
+        ]),
     "",
     "STDOUT:",
     result.stdout,
@@ -174,7 +152,7 @@ function formatCommandLog(command: string, result: ValidationResult): string {
   ].join("\n");
 }
 
-function excerpt(result: ValidationResult, maxChars = 800): string {
+function excerpt(result: ValidationResult, maxChars = 1000): string {
   const raw = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n\n").trim();
   if (raw === "") {
     return "(no output)";
@@ -185,46 +163,68 @@ function excerpt(result: ValidationResult, maxChars = 800): string {
   return `${raw.slice(0, maxChars)}\n... (truncated)`;
 }
 
-async function runValidationCommand(pi: ExtensionAPI, command: string, artifactDir: string): Promise<ValidationResult> {
-  const logName = command.replace(/^npm\s+run\s+/, "").replace(/:/g, "-");
-  const execution = await pi.exec("bash", ["-lc", command], { timeout: 300_000 });
+async function runValidationCommand(pi: ExtensionAPI, commandSpec: ValidationCommandSpec, artifactDir: string): Promise<ValidationResult> {
+  const logName = commandSpec.command.replace(/^npm\s+run\s+/, "").replace(/:/g, "-");
+  const execution = await pi.exec("bash", ["-lc", commandSpec.command], { timeout: 300_000 });
   const stdout = execution.stdout ?? "";
   const stderr = execution.stderr ?? "";
-  const combinedOutput = [stdout, stderr].filter(Boolean).join("\n");
-  const exitCode = execution.code ?? -1;
-  const skip = parseExpectedSkip(combinedOutput);
-
-  const result: ValidationResult = {
-    command,
-    exitCode,
+  const analysis = analyzeValidationResult({
+    lane: commandSpec.lane,
+    exitCode: execution.code ?? -1,
     stdout,
     stderr,
-    skipped: exitCode === 0 && skip.skipped,
-    ...(skip.skipReason === undefined ? {} : { skipReason: skip.skipReason }),
+  });
+
+  const result: ValidationResult = {
+    lane: commandSpec.lane,
+    command: commandSpec.command,
+    exitCode: execution.code ?? -1,
+    stdout,
+    stderr,
+    classification: analysis.classification,
+    skipped: analysis.signal.skipped,
+    ...(analysis.signal.skipReason === undefined ? {} : { skipReason: analysis.signal.skipReason }),
+    ...(analysis.blocker === undefined ? {} : { blocker: analysis.blocker }),
   };
 
-  await writeArtifact(artifactDir, `${logName}.log`, formatCommandLog(command, result));
+  await writeArtifact(artifactDir, `${logName}.log`, formatCommandLog(result));
   return result;
 }
 
-async function runValidationSuite(pi: ExtensionAPI, ctx: ExtensionContext, agentRun: number): Promise<ValidationSummary> {
-  const artifactDir = await createArtifactDir();
+async function runValidationLane(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  lane: ValidationLaneKind,
+  commands: readonly ValidationCommandSpec[],
+  artifactDir: string,
+): Promise<ValidationResult[]> {
   const results: ValidationResult[] = [];
 
-  for (const command of VALIDATION_COMMANDS) {
-    ctx.ui.setStatus("validation-gate", `Running ${command}...`);
+  for (const command of commands) {
+    ctx.ui.setStatus("validation-gate", `Running ${lane} validation: ${command.command}...`);
     const result = await runValidationCommand(pi, command, artifactDir);
     results.push(result);
-    if (result.exitCode !== 0 && !result.skipped) {
+    if (result.classification !== "passed") {
       break;
     }
   }
 
+  return results;
+}
+
+async function runValidationSuite(pi: ExtensionAPI, ctx: ExtensionContext, agentRun: number): Promise<ValidationSummary> {
+  const artifactDir = await createArtifactDir();
+  const deterministicResults = await runValidationLane(pi, ctx, "deterministic", DETERMINISTIC_VALIDATION_COMMANDS, artifactDir);
+  const failedDeterministic = deterministicResults.find((result) => result.classification !== "passed");
+  const liveResults = failedDeterministic === undefined
+    ? await runValidationLane(pi, ctx, "live", LIVE_VALIDATION_COMMANDS, artifactDir)
+    : [];
+  const results = [...deterministicResults, ...liveResults];
+
   const summary: ValidationSummary = {
     timestamp: new Date().toISOString(),
     agentRun,
-    passed: results.every((result) => result.exitCode === 0 || result.skipped),
-    retryCount: 0,
+    passed: results.length > 0 && results.every((result) => result.classification === "passed"),
     artifactDir,
     results,
   };
@@ -233,63 +233,113 @@ async function runValidationSuite(pi: ExtensionAPI, ctx: ExtensionContext, agent
   return summary;
 }
 
-function formatFailureMessage(summary: ValidationSummary, retryCount: number): string {
-  const failures = summary.results.filter((result) => result.exitCode !== 0 && !result.skipped);
-  let message = `${EXTENSION_MARKER}\n\n`;
-  message += "## Validation Failed\n\n";
-  message += `Validation failed after a mutating agent run. Artifact directory: ${summary.artifactDir}\n\n`;
-
-  for (const failure of failures) {
-    const logName = failure.command.replace(/^npm\s+run\s+/, "").replace(/:/g, "-");
-    message += `### ${failure.command}\n`;
-    message += `- Exit code: ${failure.exitCode}\n`;
-    message += `- Log: ${summary.artifactDir}/${logName}.log\n`;
-    message += "- Output excerpt:\n```\n";
-    message += excerpt(failure);
-    message += "\n```\n\n";
-  }
-
-  message += "## Action Required\n\n";
-  message += "Do NOT stop, do NOT claim completion, and do NOT report success yet.\n";
-  message += "This task is only complete once the validation gate passes.\n";
-  message += "Fix these failures and continue working until validation reruns cleanly.\n";
-  message += `Retry ${retryCount}/${MAX_RETRIES}. Remaining retries: ${MAX_RETRIES - retryCount}.\n`;
-  return message;
+function formatFixableFailureMessage(summary: ValidationSummary, failure: ValidationResult, retryCount: number): string {
+  const logName = failure.command.replace(/^npm\s+run\s+/, "").replace(/:/g, "-");
+  return [
+    EXTENSION_MARKER,
+    "",
+    `## ${failure.lane === "deterministic" ? "Deterministic" : "Live"} Validation Failed`,
+    "",
+    `Validation failed after a mutating agent run. Artifact directory: ${summary.artifactDir}`,
+    "",
+    `### ${failure.command}`,
+    `- Lane: ${failure.lane}`,
+    `- Exit code: ${failure.exitCode}`,
+    `- Classification: ${failure.classification}`,
+    `- Log: ${summary.artifactDir}/${logName}.log`,
+    "- Output excerpt:",
+    "```",
+    excerpt(failure),
+    "```",
+    "",
+    "## Action Required",
+    "",
+    "Do NOT stop, do NOT claim completion, and do NOT report success yet.",
+    "This task is only complete once the validation gate passes.",
+    "Fix the underlying repo issue and continue working until validation reruns cleanly.",
+    `Retry ${retryCount}/${MAX_RETRIES}. Remaining retries: ${MAX_RETRIES - retryCount}.`,
+  ].join("\n");
 }
 
-function formatFollowUpPrompt(summary: ValidationSummary, retryCount: number): string {
-  return `${formatFailureMessage(summary, retryCount)}\nProceed to fix the validation failures now. Keep working until the validation gate passes, and only then report completion.`;
+function formatFollowUpPrompt(summary: ValidationSummary, failure: ValidationResult, retryCount: number): string {
+  return [
+    formatFixableFailureMessage(summary, failure, retryCount),
+    "Proceed to fix this validation failure now. Keep working until the validation gate passes, and only then report completion.",
+  ].join("\n\n");
+}
+
+function formatExternalBlockMessage(summary: ValidationSummary, failure: ValidationResult): string {
+  const blockerHeadline = failure.blocker?.headline ?? "External validation dependency is unavailable";
+  const escalationHint = failure.blocker?.escalationHint
+    ?? "Ask the user to restore the external dependency, then rerun the live validation suite.";
+  const logName = failure.command.replace(/^npm\s+run\s+/, "").replace(/:/g, "-");
+
+  return [
+    EXTENSION_MARKER,
+    "",
+    "## Live Validation Blocked By External Dependency",
+    "",
+    `The deterministic repo guard is green, but live validation could not complete because an external dependency failed. Artifact directory: ${summary.artifactDir}`,
+    "",
+    `### ${failure.command}`,
+    `- Lane: ${failure.lane}`,
+    `- Exit code: ${failure.exitCode}`,
+    `- Classification: ${failure.classification}`,
+    ...(failure.skipped ? [`- Skip reason: ${failure.skipReason ?? "unknown"}`] : []),
+    ...(failure.blocker === undefined ? [] : [`- External blocker: ${failure.blocker.code}`, `- Blocker summary: ${blockerHeadline}`]),
+    `- Log: ${summary.artifactDir}/${logName}.log`,
+    "- Output excerpt:",
+    "```",
+    excerpt(failure),
+    "```",
+    "",
+    "## Action Required",
+    "",
+    "Do NOT keep changing code or rerunning the same fix loop for this failure.",
+    "This looks like provider/auth/quota/capacity weather, not a deterministic repo regression.",
+    escalationHint,
+    "Escalate this blocker to the user and wait for further instructions.",
+  ].join("\n");
+}
+
+function formatExternalBlockPrompt(summary: ValidationSummary, failure: ValidationResult): string {
+  const blockerHeadline = failure.blocker?.headline ?? "External live validation dependency unavailable";
+  const escalationHint = failure.blocker?.escalationHint
+    ?? "Please ask the user to restore the external dependency and rerun validate:main.";
+  return [
+    EXTENSION_MARKER,
+    "Validation is blocked by an external transient dependency, not a code issue you can fix from this repo.",
+    `Blocked command: ${failure.command}`,
+    `Blocker: ${blockerHeadline}`,
+    `Artifact directory: ${summary.artifactDir}`,
+    "Stop making code changes for this validation failure.",
+    "Tell the user you are blocked and need human intervention or a later rerun.",
+    escalationHint,
+  ].join("\n");
 }
 
 function formatSuccessMessage(summary: ValidationSummary): string {
-  const passed = summary.results.filter((result) => result.exitCode === 0).length;
-  const skipped = summary.results.filter((result) => result.skipped).length;
-  let message = "## Validation Gate Passed\n\n";
-  message += `Validated successfully after a mutating agent run. Artifact directory: ${summary.artifactDir}\n\n`;
-  message += `Commands passed: ${passed}`;
-  if (skipped > 0) {
-    message += `, skipped: ${skipped}`;
-  }
-  message += ".\n";
-
-  const skippedResults = summary.results.filter((result) => result.skipped);
-  if (skippedResults.length > 0) {
-    message += "\n### Expected skips\n";
-    for (const result of skippedResults) {
-      message += `- ${result.command}: ${result.skipReason ?? "skipped"}\n`;
-    }
-  }
-
-  return message;
+  const deterministicPassed = summary.results.filter((result) => result.lane === "deterministic" && result.classification === "passed").length;
+  const livePassed = summary.results.filter((result) => result.lane === "live" && result.classification === "passed").length;
+  return [
+    "## Validation Gate Passed",
+    "",
+    `Validated successfully after a mutating agent run. Artifact directory: ${summary.artifactDir}`,
+    "",
+    `Deterministic commands passed: ${deterministicPassed}`,
+    `Live commands passed: ${livePassed}`,
+  ].join("\n");
 }
 
-function formatRetryLimitMessage(summary: ValidationSummary, retryCount: number): string {
+function formatRetryLimitMessage(summary: ValidationSummary, failure: ValidationResult, retryCount: number): string {
   return [
-    `${EXTENSION_MARKER}`,
+    EXTENSION_MARKER,
     "",
     "## Validation Retry Limit Reached",
     "",
     `Validation still failed after ${retryCount} automatic retry attempt(s).`,
+    `Failed command: ${failure.command}`,
+    `Lane: ${failure.lane}`,
     `Artifact directory: ${summary.artifactDir}`,
     "Human intervention is now required.",
   ].join("\n");
@@ -301,6 +351,10 @@ function maybeSendFollowUp(pi: ExtensionAPI, ctx: ExtensionContext, content: str
     return;
   }
   pi.sendUserMessage(content, { deliverAs: "followUp" });
+}
+
+function findFirstNonPassingResult(summary: ValidationSummary): ValidationResult | undefined {
+  return summary.results.find((result) => result.classification !== "passed");
 }
 
 export default function validationGate(pi: ExtensionAPI) {
@@ -316,7 +370,7 @@ export default function validationGate(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     resetStaleState(pi, ctx);
-    ctx.ui.notify("Validation gate enabled", "info");
+    ctx.ui.notify("Validation gate enabled (deterministic + live lanes)", "info");
   });
 
   pi.on("input", async (event, ctx) => {
@@ -341,7 +395,7 @@ export default function validationGate(pi: ExtensionAPI) {
     agentRunCounter += 1;
   });
 
-  pi.on("tool_call", async (event, _ctx) => {
+  pi.on("tool_call", async (event) => {
     if (event.toolName === "edit" || event.toolName === "write") {
       currentAgentMutated = true;
       return;
@@ -375,8 +429,9 @@ export default function validationGate(pi: ExtensionAPI) {
     try {
       const summary = await runValidationSuite(pi, ctx, agentRunCounter);
       const latestState = readState(ctx);
+      const failure = findFirstNonPassingResult(summary);
 
-      if (summary.passed) {
+      if (summary.passed || failure === undefined) {
         writeState(pi, {
           ...latestState,
           validationInProgress: false,
@@ -394,6 +449,23 @@ export default function validationGate(pi: ExtensionAPI) {
         return;
       }
 
+      if (failure.classification === "external_transient") {
+        writeState(pi, {
+          ...latestState,
+          validationInProgress: false,
+          retryCount: 0,
+        });
+        ctx.ui.setStatus("validation-gate", undefined);
+        ctx.ui.notify("Validation gate blocked by external dependency", "warning");
+        pi.sendMessage({
+          customType: MESSAGE_TYPE,
+          content: formatExternalBlockMessage(summary, failure),
+          display: true,
+        });
+        maybeSendFollowUp(pi, ctx, formatExternalBlockPrompt(summary, failure));
+        return;
+      }
+
       const nextRetryCount = latestState.retryCount + 1;
       writeState(pi, {
         ...latestState,
@@ -402,15 +474,14 @@ export default function validationGate(pi: ExtensionAPI) {
       });
 
       if (nextRetryCount < MAX_RETRIES) {
-        const failureMessage = formatFailureMessage(summary, nextRetryCount);
         ctx.ui.setStatus("validation-gate", undefined);
         ctx.ui.notify(`Validation gate failed (${nextRetryCount}/${MAX_RETRIES})`, "warning");
         pi.sendMessage({
           customType: MESSAGE_TYPE,
-          content: failureMessage,
+          content: formatFixableFailureMessage(summary, failure, nextRetryCount),
           display: true,
         });
-        maybeSendFollowUp(pi, ctx, formatFollowUpPrompt(summary, nextRetryCount));
+        maybeSendFollowUp(pi, ctx, formatFollowUpPrompt(summary, failure, nextRetryCount));
         return;
       }
 
@@ -418,7 +489,7 @@ export default function validationGate(pi: ExtensionAPI) {
       ctx.ui.notify("Validation gate failed: retry limit reached", "error");
       pi.sendMessage({
         customType: MESSAGE_TYPE,
-        content: formatRetryLimitMessage(summary, nextRetryCount),
+        content: formatRetryLimitMessage(summary, failure, nextRetryCount),
         display: true,
       });
     } catch (error) {

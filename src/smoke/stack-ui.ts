@@ -138,9 +138,9 @@ async function configureExtensionRuntime(page: Page, input: { endpoint: string; 
 }
 
 async function killExistingStack(): Promise<void> {
-  await attemptCleanup("smoke.stack_ui.kill_dev_stack", () => runShell("pkill -f 'tsx src/cli/dev-stack.ts'", 10_000).then(() => undefined));
-  await attemptCleanup("smoke.stack_ui.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts'", 10_000).then(() => undefined));
-  await attemptCleanup("smoke.stack_ui.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", 10_000).then(() => undefined));
+  await attemptCleanup("smoke.stack_ui.kill_dev_stack", () => runShell("pkill -f 'tsx src/cli/dev-stack.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
+  await attemptCleanup("smoke.stack_ui.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
+  await attemptCleanup("smoke.stack_ui.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
 }
 
 function startDevStack() {

@@ -131,11 +131,11 @@ async function seedUiState(): Promise<void> {
 }
 
 async function killExistingWebServer(): Promise<void> {
-  await attemptCleanup("smoke.web_ui.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts'", { timeoutMs: 10_000 }).then(() => undefined));
+  await attemptCleanup("smoke.web_ui.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", { timeoutMs: 10_000 }).then(() => undefined));
 }
 
 async function killExistingOrchestrator(): Promise<void> {
-  await attemptCleanup("smoke.web_ui.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts'", { timeoutMs: 10_000 }).then(() => undefined));
+  await attemptCleanup("smoke.web_ui.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", { timeoutMs: 10_000 }).then(() => undefined));
 }
 
 function startWebServer() {
