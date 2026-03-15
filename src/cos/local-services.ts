@@ -10,13 +10,14 @@ export interface LocalChiefOfStaffServicesOptions {
   trackerDir: string;
   runsRootDir: string;
   activeRunRegistry: ActiveRunRegistry;
+  projectRoot?: string;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   trackerRegistry?: TrackerProviderRegistry;
 }
 
 export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServicesOptions): ChiefOfStaffServices {
-  const trackerSelection = resolveTrackerSelectionConfig(options.env ?? process.env);
+  const trackerSelection = resolveTrackerSelectionConfig(options.env ?? process.env, options.projectRoot);
   const trackerRegistry = options.trackerRegistry ?? createTrackerProviderRegistry({
     trackerDir: options.trackerDir,
     ...(options.env === undefined ? {} : { env: options.env }),

@@ -1,3 +1,5 @@
+import type { SupportedTrackerProvider } from "../tracker/types.js";
+
 export type WorkflowPhaseName = "prepare" | "validate" | "teardown";
 export type WorkflowPhaseScope = "control_plane" | "runtime";
 
@@ -20,8 +22,15 @@ export interface DockerComposeWorkflowRuntime {
   endpoints?: Record<string, string>;
 }
 
+export interface WorkflowTrackerDefinition {
+  provider: SupportedTrackerProvider;
+  projectKey?: string;
+  boardId?: string;
+}
+
 export interface WorkflowDefinition {
   version: 1;
+  tracker?: WorkflowTrackerDefinition;
   runtime: DockerComposeWorkflowRuntime;
   phases: Partial<Record<WorkflowPhaseName, WorkflowPhaseDefinition>>;
 }

@@ -12,7 +12,7 @@ export interface OrchestratorWatchConfig extends RepoPaths, TrackerSelectionConf
 
 export function parseOrchestratorWatchConfig(env: NodeJS.ProcessEnv, repoRoot = process.cwd()): OrchestratorWatchConfig {
   const paths = resolveRepoPaths(repoRoot);
-  const trackerSelection = resolveTrackerSelectionConfig(env);
+  const trackerSelection = resolveTrackerSelectionConfig(env, repoRoot);
   return {
     ...paths,
     ...trackerSelection,

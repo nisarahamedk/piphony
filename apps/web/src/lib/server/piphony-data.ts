@@ -20,7 +20,7 @@ import type {
 const webServerPaths = resolveWebServerPaths();
 const trackerDir = webServerPaths.trackerDir;
 const runsDir = webServerPaths.runsRootDir;
-const trackerSelection = resolveTrackerSelectionConfig(process.env);
+const trackerSelection = resolveTrackerSelectionConfig(process.env, webServerPaths.repoRoot);
 const trackerRegistry = createTrackerProviderRegistry({
   trackerDir,
   env: process.env,

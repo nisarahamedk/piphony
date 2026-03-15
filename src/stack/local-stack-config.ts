@@ -37,7 +37,7 @@ export function resolveLocalPiphonyStackConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): LocalPiphonyStackConfig {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
-  const trackerSelection = resolveTrackerSelectionConfig(env);
+  const trackerSelection = resolveTrackerSelectionConfig(env, repoRoot);
   return {
     repoRoot,
     trackerDir: resolve(options.trackerDir ?? join(repoRoot, ".piphony", "tracker-local")),

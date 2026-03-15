@@ -81,6 +81,7 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
       trackerDir: config.trackerDir,
       runsRootDir: config.runsRootDir,
       activeRunRegistry,
+      projectRoot: config.repoRoot,
       trackerRegistry,
       env: process.env,
     }),

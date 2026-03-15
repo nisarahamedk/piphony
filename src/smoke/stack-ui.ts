@@ -4,15 +4,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createClient } from "rivetkit/client";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { attemptCleanup } from "../core/cleanup.js";
+import { readWorkflowSync } from "../workflow/loader.js";
+import { createOnboardedReferenceProject, pickAvailablePort } from "./fixture-project.js";
 import { repoRoot } from "./_common.js";
 
 const execFileAsync = promisify(execFile);
-const webUrl = "http://127.0.0.1:3333";
-const cosEndpoint = "http://127.0.0.1:6521/api/rivet";
-const cosHealthUrl = "http://127.0.0.1:6521/health";
 const suffix = Date.now().toString().slice(-6);
 const createdIdentifier = `LOCAL-${suffix}`;
 const createdTitle = `True stack CoS smoke ${suffix}`;
@@ -86,44 +84,34 @@ async function waitForBodyText(input: {
   throw new Error(`Timed out waiting for body text: ${input.includes.join(", ")}`);
 }
 
-async function waitForExtensionMessageCount(page: Page, expected: number, timeoutMs = 60_000): Promise<void> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const count = await page.locator("[data-testid^='extension-message-']").count();
-    if (count === expected) {
-      return;
-    }
-    await sleep(500);
-  }
-  throw new Error(`Timed out waiting for extension message count: ${expected}`);
-}
-
-async function waitForAssistantMessage(input: {
-  handle: any;
-  afterIndex: number;
+async function waitForExtensionReply(input: {
+  page: Page;
   includes: string[];
+  expectedMessageCount: number;
   timeoutMs?: number;
-}): Promise<string> {
+}): Promise<void> {
   const timeoutMs = input.timeoutMs ?? 240_000;
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    const history = await input.handle.getHistory();
-    if (Array.isArray(history)) {
-      const assistantMessage = history
-        .slice(input.afterIndex)
-        .find((message: { role?: string; content?: string }) => {
-          const content = message.content;
-          return message.role === "assistant"
-            && typeof content === "string"
-            && input.includes.every((needle) => content.includes(needle));
-        });
-      if (assistantMessage && typeof assistantMessage.content === "string") {
-        return assistantMessage.content;
-      }
+    const [rawMessages, rawStatus, count] = await Promise.all([
+      input.page.getByTestId("extension-messages").textContent().catch(() => null),
+      input.page.getByTestId("extension-status").textContent().catch(() => null),
+      input.page.locator("[data-testid^='extension-message-']").count(),
+    ]);
+    const messages = rawMessages ?? "";
+    const status = rawStatus ?? "";
+    if (input.includes.every((needle) => messages.includes(needle)) && count === input.expectedMessageCount) {
+      return;
+    }
+    if (/(usage limit|rate limit|under heavy load|temporarily unavailable|capacity)/i.test(status)) {
+      throw new Error(`Extension assistant blocked: ${status}`);
+    }
+    if (/^error:/i.test(status.trim())) {
+      throw new Error(`Extension assistant failed: ${status}`);
     }
     await sleep(1_000);
   }
-  throw new Error(`Timed out waiting for assistant response: ${input.includes.join(", ")}`);
+  throw new Error(`Timed out waiting for extension reply: ${input.includes.join(", ")}`);
 }
 
 async function configureExtensionRuntime(page: Page, input: { endpoint: string; userKeyValue: string }): Promise<void> {
@@ -137,16 +125,16 @@ async function configureExtensionRuntime(page: Page, input: { endpoint: string; 
   await page.waitForSelector("[data-testid='extension-panel']", { timeout: 30_000 });
 }
 
-async function killExistingStack(): Promise<void> {
-  await attemptCleanup("smoke.stack_ui.kill_dev_stack", () => runShell("pkill -f 'tsx src/cli/dev-stack.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
-  await attemptCleanup("smoke.stack_ui.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
-  await attemptCleanup("smoke.stack_ui.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
-}
-
-function startDevStack() {
+function startDevStack(input: { projectRoot: string; webPort: number; cosPort: number }) {
   return spawn("npm", ["run", "dev:stack"], {
     cwd: repoRoot,
-    env: { ...process.env, PIPHONY_STACK_WORKER_MODE: "smoke" },
+    env: {
+      ...process.env,
+      PIPHONY_STACK_WORKER_MODE: "smoke",
+      PIPHONY_PROJECT_ROOT: input.projectRoot,
+      PIPHONY_WEB_PORT: String(input.webPort),
+      PIPHONY_COS_PORT: String(input.cosPort),
+    },
     stdio: "inherit",
   });
 }
@@ -178,16 +166,29 @@ async function resolveExtensionId(context: BrowserContext): Promise<string> {
 }
 
 await runShell("npm run build:extension", 300_000);
-await killExistingStack();
-const stack = startDevStack();
+const sourceWorkflow = readWorkflowSync(join(repoRoot, "reference", "openclawsseum"));
+if (sourceWorkflow === undefined) {
+  throw new Error("Expected reference/openclawsseum to contain .piphony/workflow.json for smoke onboarding defaults");
+}
+const fixture = await createOnboardedReferenceProject("openclawsseum", {
+  trackerProvider: "local",
+  model: "minimax/MiniMax-M2.5",
+  runtime: sourceWorkflow.runtime,
+  phases: sourceWorkflow.phases,
+  force: true,
+});
+const webPort = await pickAvailablePort();
+const cosPort = await pickAvailablePort();
+const webUrl = `http://127.0.0.1:${webPort}`;
+const cosEndpoint = `http://127.0.0.1:${cosPort}/api/rivet`;
+const cosHealthUrl = `http://127.0.0.1:${cosPort}/health`;
+const stack = startDevStack({ projectRoot: fixture.projectRoot, webPort, cosPort });
 
 try {
   await waitForHttp(webUrl);
   await waitForHttp(cosHealthUrl);
 
   const { context, userDataDir, extensionId } = await launchExtensionBrowser();
-  const client = createClient<any>({ endpoint: cosEndpoint }) as any;
-  const handle = client.chiefOfStaff.getOrCreate(cosUserKey) as any;
   try {
     const webPage = await context.newPage();
     await webPage.goto(webUrl, { waitUntil: "networkidle", timeout: 120_000 });
@@ -227,25 +228,16 @@ try {
       timeoutMs: 60_000,
     });
 
-    const issueHistory = await handle.getHistory();
-    const issueHistoryBefore = Array.isArray(issueHistory) ? issueHistory.length : 0;
     await extensionPage.getByTestId("extension-input").fill(
       `Use the current issue page context tools. Start exactly with '${issueToken}' and include the exact issue identifier on this page.`,
     );
     await extensionPage.getByTestId("extension-send").click();
-    await waitForAssistantMessage({
-      handle,
-      afterIndex: issueHistoryBefore,
+    await waitForExtensionReply({
+      page: extensionPage,
       includes: [issueToken, createdIdentifier],
+      expectedMessageCount: 2,
       timeoutMs: 240_000,
     });
-    await waitForLocatorText({
-      page: extensionPage,
-      testId: "extension-messages",
-      includes: [issueToken, createdIdentifier],
-      timeoutMs: 60_000,
-    });
-    await waitForExtensionMessageCount(extensionPage, 2, 60_000);
 
     await webPage.bringToFront();
     await waitForBodyText({
@@ -276,25 +268,16 @@ try {
       timeoutMs: 60_000,
     });
 
-    const planHistory = await handle.getHistory();
-    const planHistoryBefore = Array.isArray(planHistory) ? planHistory.length : 0;
     await extensionPage.getByTestId("extension-input").fill(
       `Use the board overview and create exactly one backlog follow-up ticket titled '${plannedTitle}'. Reply starting exactly with '${planToken}' and include the exact title.`,
     );
     await extensionPage.getByTestId("extension-send").click();
-    await waitForAssistantMessage({
-      handle,
-      afterIndex: planHistoryBefore,
+    await waitForExtensionReply({
+      page: extensionPage,
       includes: [planToken, plannedTitle],
+      expectedMessageCount: 4,
       timeoutMs: 240_000,
     });
-    await waitForLocatorText({
-      page: extensionPage,
-      testId: "extension-messages",
-      includes: [planToken, plannedTitle],
-      timeoutMs: 60_000,
-    });
-    await waitForExtensionMessageCount(extensionPage, 4, 60_000);
     await waitForBodyText({
       page: webPage,
       includes: [plannedTitle],
@@ -315,4 +298,5 @@ try {
   }
 } finally {
   stack.kill("SIGTERM");
+  await attemptCleanup("smoke.stack_ui.fixture.cleanup", () => fixture.cleanup());
 }

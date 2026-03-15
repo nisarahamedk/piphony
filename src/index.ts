@@ -7,4 +7,5 @@ export * from "./pi/index.js";
 export * from "./runtime/docker/index.js";
 export * from "./tracker/index.js";
 export * from "./workflow/index.js";
+export * from "./onboarding/index.js";
 export * from "./stack/local-stack.js";

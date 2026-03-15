@@ -13,8 +13,17 @@ export interface AgentTypeDefinition {
   systemPromptAppend?: string;
 }
 
+export interface AgentTypeOverride {
+  name: string;
+  description?: string;
+  model?: string;
+  thinkingLevel?: ThinkingLevel;
+  tools?: string[];
+  systemPromptAppend?: string;
+}
+
 interface AgentTypeFileShape {
-  agents: AgentTypeDefinition[];
+  agents: AgentTypeOverride[];
 }
 
 const BUILTIN_AGENT_TYPES: Record<string, AgentTypeDefinition> = {
@@ -81,8 +90,45 @@ export async function loadAgentTypes(cwd: string): Promise<Record<string, AgentT
     return BUILTIN_AGENT_TYPES;
   }
   const parsed = JSON.parse(await readFile(configPath, "utf8")) as AgentTypeFileShape;
-  const userTypes = Object.fromEntries(parsed.agents.map((agent) => [agent.name, agent]));
-  return { ...BUILTIN_AGENT_TYPES, ...userTypes };
+  const resolved: Record<string, AgentTypeDefinition> = { ...BUILTIN_AGENT_TYPES };
+
+  for (const override of parsed.agents) {
+    const base = resolved[override.name];
+    if (base === undefined) {
+      resolved[override.name] = materializeNewAgentType(override);
+      continue;
+    }
+    resolved[override.name] = {
+      ...base,
+      ...override,
+      tools: override.tools === undefined ? base.tools : [...override.tools],
+    };
+  }
+
+  return resolved;
+}
+
+function materializeNewAgentType(override: AgentTypeOverride): AgentTypeDefinition {
+  if (override.model === undefined || override.thinkingLevel === undefined || override.tools === undefined) {
+    throw new Error(
+      `Custom agent type '${override.name}' must define model, thinkingLevel, and tools when it does not extend a built-in agent type`,
+    );
+  }
+  return {
+    name: override.name,
+    ...(override.description === undefined ? {} : { description: override.description }),
+    model: override.model,
+    thinkingLevel: override.thinkingLevel,
+    tools: [...override.tools],
+    ...(override.systemPromptAppend === undefined ? {} : { systemPromptAppend: override.systemPromptAppend }),
+  };
+}
+
+export function createAgentModelOverrides(model: string): AgentTypeOverride[] {
+  return Object.values(BUILTIN_AGENT_TYPES).map((agent) => ({
+    name: agent.name,
+    model,
+  }));
 }
 
 export async function resolveAgentType(cwd: string, name = "implementation"): Promise<AgentTypeDefinition> {

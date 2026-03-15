@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { parseSupportedTrackerProvider } from "../tracker/types.js";
 import type { WorkflowDefinition, WorkflowLoadResult, WorkflowPhaseDefinition } from "./types.js";
 
 const ALLOWED_CONTROL_PLANE_EXECUTABLES = new Set([
@@ -41,8 +42,22 @@ const DISALLOWED_REPO_TOOLCHAIN_EXECUTABLES = new Set([
   "dotnet",
 ]);
 
+export function resolveWorkflowPath(repoRoot: string): string {
+  return resolve(join(repoRoot, ".piphony", "workflow.json"));
+}
+
+export function readWorkflowSync(repoRoot: string): WorkflowDefinition | undefined {
+  const path = resolveWorkflowPath(repoRoot);
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as WorkflowDefinition;
+  validateWorkflow(parsed, path);
+  return parsed;
+}
+
 export async function loadWorkflow(repoRoot: string): Promise<WorkflowLoadResult> {
-  const path = resolve(join(repoRoot, ".piphony", "workflow.json"));
+  const path = resolveWorkflowPath(repoRoot);
   if (!existsSync(path)) {
     throw new Error(`Workflow file not found: ${path}`);
   }
@@ -54,6 +69,15 @@ export async function loadWorkflow(repoRoot: string): Promise<WorkflowLoadResult
 function validateWorkflow(workflow: WorkflowDefinition, path: string): void {
   if (workflow.version !== 1) {
     throw new Error(`Unsupported workflow version in ${path}: ${String((workflow as { version?: unknown }).version)}`);
+  }
+  if (workflow.tracker !== undefined) {
+    parseSupportedTrackerProvider(workflow.tracker.provider, "local");
+    if (workflow.tracker.projectKey !== undefined && workflow.tracker.projectKey.trim() === "") {
+      throw new Error(`Workflow tracker projectKey must not be empty when provided: ${path}`);
+    }
+    if (workflow.tracker.boardId !== undefined && workflow.tracker.boardId.trim() === "") {
+      throw new Error(`Workflow tracker boardId must not be empty when provided: ${path}`);
+    }
   }
   if (workflow.runtime.provider !== "docker_compose") {
     throw new Error(`Unsupported workflow runtime provider in ${path}: ${String((workflow.runtime as { provider?: unknown }).provider)}`);

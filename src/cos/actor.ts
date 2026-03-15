@@ -204,7 +204,7 @@ async function ensureController(c: { key: string[]; vars: ChiefOfStaffActorVars 
   c.vars.controller = await createPiSessionController({
     cwd: options.cwd,
     agentType: "chief_of_staff",
-    modelPreference: options.modelPreference ?? "minimax/MiniMax-M2.5",
+    ...(options.modelPreference === undefined ? {} : { modelPreference: options.modelPreference }),
     thinkingLevel: "off",
     extensionFactories: [createChiefOfStaffExtension(options.services)],
     ...(options.providerCapacityService === undefined ? {} : { providerCapacityService: options.providerCapacityService }),
