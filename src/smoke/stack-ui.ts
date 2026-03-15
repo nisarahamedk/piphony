@@ -1,16 +1,12 @@
-import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { promisify } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { attemptCleanup } from "../core/cleanup.js";
-import { readWorkflowSync } from "../workflow/loader.js";
-import { createOnboardedReferenceProject, pickAvailablePort } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
 import { repoRoot } from "./_common.js";
-
-const execFileAsync = promisify(execFile);
+import { runSmokeShell, startSmokeDevStack, stopSmokeProcess, waitForHttp } from "./harness.js";
 const suffix = Date.now().toString().slice(-6);
 const createdIdentifier = `LOCAL-${suffix}`;
 const createdTitle = `True stack CoS smoke ${suffix}`;
@@ -20,34 +16,6 @@ const issueToken = "STACK-ISSUE:";
 const plannedTitle = `Stack smoke follow-up ${suffix}`;
 const planToken = "STACK-PLANNED:";
 const extensionDir = join(repoRoot, "apps", "extension", "dist");
-
-function stripAnsi(value: string): string {
-  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\u001b\(B/g, "");
-}
-
-async function runShell(command: string, timeoutMs = 120_000): Promise<string> {
-  const { stdout, stderr } = await execFileAsync("bash", ["-lc", command], {
-    cwd: repoRoot,
-    timeout: timeoutMs,
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  return stripAnsi([stdout.toString(), stderr.toString()].filter(Boolean).join("\n").trim());
-}
-
-async function waitForHttp(url: string, attempts = 180): Promise<void> {
-  for (let index = 0; index < attempts; index += 1) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // retry
-    }
-    await sleep(1_000);
-  }
-  throw new Error(`service_not_ready:${url}`);
-}
 
 async function waitForLocatorText(input: {
   page: Page;
@@ -125,20 +93,6 @@ async function configureExtensionRuntime(page: Page, input: { endpoint: string; 
   await page.waitForSelector("[data-testid='extension-panel']", { timeout: 30_000 });
 }
 
-function startDevStack(input: { projectRoot: string; webPort: number; cosPort: number }) {
-  return spawn("npm", ["run", "dev:stack"], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PIPHONY_STACK_WORKER_MODE: "smoke",
-      PIPHONY_PROJECT_ROOT: input.projectRoot,
-      PIPHONY_WEB_PORT: String(input.webPort),
-      PIPHONY_COS_PORT: String(input.cosPort),
-    },
-    stdio: "inherit",
-  });
-}
-
 async function launchExtensionBrowser(): Promise<{ context: BrowserContext; userDataDir: string; extensionId: string }> {
   const userDataDir = await mkdtemp(join(tmpdir(), "piphony-extension-browser-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -165,24 +119,14 @@ async function resolveExtensionId(context: BrowserContext): Promise<string> {
   throw new Error("Failed to resolve extension id from browser service workers");
 }
 
-await runShell("npm run build:extension", 300_000);
-const sourceWorkflow = readWorkflowSync(join(repoRoot, "reference", "openclawsseum"));
-if (sourceWorkflow === undefined) {
-  throw new Error("Expected reference/openclawsseum to contain .piphony/workflow.json for smoke onboarding defaults");
-}
-const fixture = await createOnboardedReferenceProject("openclawsseum", {
-  trackerProvider: "local",
-  model: "minimax/MiniMax-M2.5",
-  runtime: sourceWorkflow.runtime,
-  phases: sourceWorkflow.phases,
-  force: true,
-});
+await runSmokeShell("npm run build:extension", { timeoutMs: 300_000 });
+const fixture = await createOnboardedOpenclawsseumProject();
 const webPort = await pickAvailablePort();
 const cosPort = await pickAvailablePort();
 const webUrl = `http://127.0.0.1:${webPort}`;
 const cosEndpoint = `http://127.0.0.1:${cosPort}/api/rivet`;
 const cosHealthUrl = `http://127.0.0.1:${cosPort}/health`;
-const stack = startDevStack({ projectRoot: fixture.projectRoot, webPort, cosPort });
+const stack = startSmokeDevStack({ projectRoot: fixture.projectRoot, webPort, cosPort });
 
 try {
   await waitForHttp(webUrl);
@@ -297,6 +241,6 @@ try {
     await attemptCleanup("smoke.stack_ui.user_data_dir.remove", () => rm(userDataDir, { recursive: true, force: true }));
   }
 } finally {
-  stack.kill("SIGTERM");
+  await attemptCleanup("smoke.stack_ui.stack.stop", () => stopSmokeProcess(stack));
   await attemptCleanup("smoke.stack_ui.fixture.cleanup", () => fixture.cleanup());
 }

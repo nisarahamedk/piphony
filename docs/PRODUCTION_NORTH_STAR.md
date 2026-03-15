@@ -225,6 +225,21 @@ Examples:
 
 These are allowed to be messy only in the ways their environment is messy. Not in their modeling.
 
+#### Smoke fixture rule
+Repo-touching smoke tests must run against an onboarded temporary fixture repo, not the Piphony repo itself.
+
+Canonical pattern:
+- clone a local reference repo into a temp directory
+- onboard that temp repo
+- point runtime surfaces at that temp repo via explicit project-root configuration
+- write tracker/runs/artifacts inside that temp repo's `.piphony/`
+- clean up only the processes and temp paths the smoke itself created
+
+Forbidden pattern:
+- using the Piphony package repo as the managed project under test
+- broad `pkill` cleanup that can kill unrelated dev processes
+- mixing package-root state with managed-project state in the same smoke run
+
 ---
 
 ## 2.2 One boundary, one responsibility

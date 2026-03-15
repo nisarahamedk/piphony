@@ -1,8 +1,6 @@
-import { execFile, spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { promisify } from "node:util";
 import { chromium, type Page } from "playwright";
 import { attemptCleanup } from "../core/cleanup.js";
 import { errorMessage } from "../core/errors.js";
@@ -10,9 +8,7 @@ import { Orchestrator, type RunWorker, type RunWorkerContext } from "../core/orc
 import { ensureDir, resetDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
-import { repoRoot } from "./_common.js";
-
-const execFileAsync = promisify(execFile);
+import { startSmokeWebServer, stopSmokeProcess, waitForHttp } from "./harness.js";
 const createdIdentifier = "LOCAL-450";
 const createdTitle = "Pull-based workflow smoke";
 
@@ -57,34 +53,6 @@ class WebUiSmokeWorker implements RunWorker {
   }
 }
 
-function stripAnsi(value: string): string {
-  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\u001b\(B/g, "");
-}
-
-async function runShell(command: string, options?: { cwd?: string; timeoutMs?: number }): Promise<string> {
-  const { stdout, stderr } = await execFileAsync("bash", ["-lc", command], {
-    cwd: options?.cwd ?? repoRoot,
-    timeout: options?.timeoutMs ?? 120_000,
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  return stripAnsi([stdout.toString(), stderr.toString()].filter(Boolean).join("\n").trim());
-}
-
-async function waitForHttp(url: string, attempts = 180): Promise<void> {
-  for (let index = 0; index < attempts; index += 1) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return;
-      }
-    } catch {
-      // retry
-    }
-    await sleep(1_000);
-  }
-  throw new Error(`service_not_ready:${url}`);
-}
-
 async function waitForLocatorText(input: {
   page: Page;
   testId: string;
@@ -127,18 +95,6 @@ async function seedUiState(input: { runsRootDir: string; trackerDir: string; art
   await mkdir(input.artifactsDir, { recursive: true });
 }
 
-function startWebServer(input: { projectRoot: string; webPort: number }) {
-  return spawn("npm", ["run", "web:dev", "--", "--port", String(input.webPort)], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PIPHONY_PROJECT_ROOT: input.projectRoot,
-      PIPHONY_REPO_ROOT: input.projectRoot,
-    },
-    stdio: "inherit",
-  });
-}
-
 const fixture = await createOnboardedOpenclawsseumProject();
 const { trackerDir, runsRootDir, piphonyRoot } = fixture.paths;
 const artifactsDir = join(piphonyRoot, "artifacts", "web-ui-smoke");
@@ -168,7 +124,7 @@ const pollLoop = (async () => {
   }
 })();
 
-const server = startWebServer({ projectRoot: fixture.projectRoot, webPort });
+const server = startSmokeWebServer({ projectRoot: fixture.projectRoot, webPort });
 
 try {
   await waitForHttp(webUrl);
@@ -244,6 +200,6 @@ try {
 } finally {
   stopPolling = true;
   await pollLoop;
-  server.kill("SIGTERM");
+  await attemptCleanup("smoke.web_ui.server.stop", () => stopSmokeProcess(server));
   await attemptCleanup("smoke.web_ui.fixture.cleanup", () => fixture.cleanup());
 }

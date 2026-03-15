@@ -1,15 +1,10 @@
+import { smokeCommands } from "./catalog.js";
+
 console.log("Piphony smoke entrypoint");
-console.log("Run one of:");
-console.log("- npm run smoke:tracker-local");
-console.log("- npm run smoke:orchestrator");
-console.log("- npm run smoke:pi");
-console.log("- npm run smoke:local-e2e");
-console.log("- npm run smoke:docker");
-console.log("- npm run smoke:restart");
-console.log("- npm run smoke:observability");
-console.log("- npm run smoke:session-control");
-console.log("- npm run smoke:cos");
-console.log("- npm run smoke:web");
-console.log("- npm run smoke:extension");
-console.log("- npm run smoke:stack");
-console.log("- npm run smoke:pull-based-workflow");
+console.log("Canonical smoke scripts:");
+for (const command of smokeCommands) {
+  console.log(`- npm run ${command.script}  [${command.lane}]`);
+  console.log(`  ${command.description}`);
+}
+console.log("- npm run smoke:all");
+console.log("  Runs the full canonical smoke suite.");
