@@ -2,8 +2,8 @@ import { attemptCleanup } from "../core/cleanup.js";
 import type { WorkItem } from "../core/types.js";
 import type { ActiveRunRegistry } from "../core/active-run-registry.js";
 import { inspectRun, listRunSummaries } from "../observability/index.js";
-import { resolveTrackerSelectionConfig } from "../config/tracker-provider.js";
-import { createTrackerProviderRegistry, type TrackerProviderRegistry } from "../tracker/provider-registry.js";
+import { resolveTrackerRuntime } from "../tracker/runtime.js";
+import type { TrackerProviderRegistry } from "../tracker/provider-registry.js";
 import type { ChiefOfStaffBoardOverview, ChiefOfStaffIssueContext, ChiefOfStaffServices, CreateIssueInput } from "./types.js";
 
 export interface LocalChiefOfStaffServicesOptions {
@@ -17,18 +17,19 @@ export interface LocalChiefOfStaffServicesOptions {
 }
 
 export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServicesOptions): ChiefOfStaffServices {
-  const trackerSelection = resolveTrackerSelectionConfig(options.env ?? process.env, options.projectRoot);
-  const trackerRegistry = options.trackerRegistry ?? createTrackerProviderRegistry({
+  const trackerRuntime = resolveTrackerRuntime({
     trackerDir: options.trackerDir,
+    ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
-    ...(trackerSelection.trackerProjectKey === undefined ? {} : { trackerProjectKey: trackerSelection.trackerProjectKey }),
-    ...(trackerSelection.trackerBoardId === undefined ? {} : { trackerBoardId: trackerSelection.trackerBoardId }),
   });
+  const trackerSelection = trackerRuntime.selection;
+  const trackerRegistry = options.trackerRegistry ?? trackerRuntime.registry;
+  const resolveTracker = createTrackerResolver(trackerSelection.trackerProvider, trackerRegistry);
 
   return {
     async getIssueContext(input): Promise<ChiefOfStaffIssueContext> {
-      const tracker = trackerRegistry.resolve(input.provider);
+      const tracker = resolveTracker(input.provider);
       const issue = await tracker.fetchWorkItemByIdentifier(input.identifier);
       const activeRun = trackerMatch(issue, options.activeRunRegistry);
       const latestRun = issue === undefined ? undefined : await findLatestRunForWorkItem(options.runsRootDir, issue.externalId);
@@ -40,7 +41,7 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
     },
 
     async getBoardOverview(input): Promise<ChiefOfStaffBoardOverview> {
-      const tracker = trackerRegistry.resolve(input.provider);
+      const tracker = resolveTracker(input.provider);
       const issues = await tracker.fetchBoardWorkItems({
         ...(input.boardId === undefined ? {} : { boardId: input.boardId }),
         ...(input.projectKey === undefined ? {} : { projectKey: input.projectKey }),
@@ -97,7 +98,7 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
     },
 
     async retryIssue(identifier: string, provider?: string): Promise<WorkItem> {
-      const tracker = trackerRegistry.resolve(provider);
+      const tracker = resolveTracker(provider);
       const issue = await tracker.fetchWorkItemByIdentifier(identifier);
       if (issue === undefined) {
         throw new Error(`Issue not found for retry: ${identifier}`);
@@ -122,7 +123,7 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
     },
 
     async createIssue(input: CreateIssueInput): Promise<WorkItem> {
-      const tracker = trackerRegistry.resolve(input.provider);
+      const tracker = resolveTracker(input.provider);
       return tracker.createIssue({
         title: input.title,
         ...(input.description === undefined ? {} : { description: input.description }),
@@ -132,6 +133,10 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
       });
     },
   };
+}
+
+function createTrackerResolver(defaultProvider: string, registry: TrackerProviderRegistry) {
+  return (provider?: string) => registry.resolve(provider ?? defaultProvider);
 }
 
 function trackerMatch(issue: WorkItem | undefined, registry: ActiveRunRegistry) {

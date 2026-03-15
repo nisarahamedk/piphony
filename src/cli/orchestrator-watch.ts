@@ -5,19 +5,21 @@ import { Orchestrator } from "../core/orchestrator.js";
 import { parseOrchestratorWatchConfig } from "./orchestrator-watch-config.js";
 import { LocalTrackerStatusSink } from "../tracker/local/status-sink.js";
 import { LocalTrackerStore } from "../tracker/local/state.js";
-import { createTrackerProviderRegistry } from "../tracker/provider-registry.js";
+import { resolveTrackerRuntime } from "../tracker/runtime.js";
 import { ProviderCapacityService } from "../pi/provider-middleware.js";
 import { createLocalStackWorker } from "../stack/local-worker-factory.js";
 
 const config = parseOrchestratorWatchConfig(process.env);
 const trackerStore = new LocalTrackerStore({ trackerDir: config.trackerDir });
-const trackerRegistry = createTrackerProviderRegistry({
+const trackerRuntime = resolveTrackerRuntime({
   trackerDir: config.trackerDir,
+  projectRoot: config.repoRoot,
   env: process.env,
+  trackerProvider: config.trackerProvider,
   ...(config.trackerProjectKey === undefined ? {} : { trackerProjectKey: config.trackerProjectKey }),
   ...(config.trackerBoardId === undefined ? {} : { trackerBoardId: config.trackerBoardId }),
 });
-const tracker = trackerRegistry.resolve(config.trackerProvider);
+const tracker = trackerRuntime.resolve(config.trackerProvider);
 if (config.workerMode === "smoke" && tracker.provider !== "local") {
   throw new Error("Smoke worker mode requires the local tracker provider");
 }

@@ -3,7 +3,10 @@ export type ValidationLaneKind = "deterministic" | "live";
 export interface ValidationCommandSpec {
   readonly command: string;
   readonly lane: ValidationLaneKind;
+  readonly shouldRun?: (env: NodeJS.ProcessEnv) => boolean;
 }
+
+import { hasJiraTrackerLiveValidationConfig, hasLinearTrackerLiveValidationConfig } from "../tracker/live-validation.js";
 
 export type ValidationResultClassification = "passed" | "failed" | "external_transient";
 
@@ -42,6 +45,8 @@ export const LIVE_VALIDATION_COMMANDS: readonly ValidationCommandSpec[] = [
   { command: "npm run smoke:cos", lane: "live" },
   { command: "npm run smoke:stack", lane: "live" },
   { command: "npm run smoke:session-control", lane: "live" },
+  { command: "npm run smoke:tracker-live:linear", lane: "live", shouldRun: hasLinearTrackerLiveValidationConfig },
+  { command: "npm run smoke:tracker-live:jira", lane: "live", shouldRun: hasJiraTrackerLiveValidationConfig },
 ] as const;
 
 interface BlockerPattern {
@@ -113,6 +118,14 @@ const EXTERNAL_BLOCKER_PATTERNS: readonly BlockerPattern[] = [
     ],
   },
 ] as const;
+
+export function resolveValidationCommands(
+  lane: ValidationLaneKind,
+  env: NodeJS.ProcessEnv = process.env,
+): readonly ValidationCommandSpec[] {
+  const commands = lane === "deterministic" ? DETERMINISTIC_VALIDATION_COMMANDS : LIVE_VALIDATION_COMMANDS;
+  return commands.filter((command) => command.shouldRun?.(env) ?? true);
+}
 
 export function extractStructuredJson(raw: string): unknown | undefined {
   const lines = raw.trim().split(/\r?\n/);

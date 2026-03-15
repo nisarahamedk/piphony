@@ -3,8 +3,7 @@ import { CANONICAL_STATES, type CanonicalState, type WorkItem, type WorkerStatus
 import { nowIso } from "@piphony/core/utils";
 import { parseCanonicalState } from "@piphony/core/work-item-transitions";
 import { inspectRun, listRuns, listRunSummaries, type RunInspection, type RunSummaryInspection } from "@piphony/observability";
-import { resolveTrackerSelectionConfig } from "@piphony/config/tracker-provider";
-import { createTrackerProviderRegistry } from "@piphony/tracker/provider-registry";
+import { resolveTrackerRuntime } from "@piphony/tracker/runtime";
 import { resolveWebServerPaths } from "./config";
 import { LocalTrackerStore } from "@piphony/tracker/local/state";
 import type { LocalIssue, LocalTrackerState, LocalTrackerWorker } from "@piphony/tracker/local/types";
@@ -20,13 +19,12 @@ import type {
 const webServerPaths = resolveWebServerPaths();
 const trackerDir = webServerPaths.trackerDir;
 const runsDir = webServerPaths.runsRootDir;
-const trackerSelection = resolveTrackerSelectionConfig(process.env, webServerPaths.repoRoot);
-const trackerRegistry = createTrackerProviderRegistry({
+const trackerRuntime = resolveTrackerRuntime({
   trackerDir,
+  projectRoot: webServerPaths.repoRoot,
   env: process.env,
-  ...(trackerSelection.trackerProjectKey === undefined ? {} : { trackerProjectKey: trackerSelection.trackerProjectKey }),
-  ...(trackerSelection.trackerBoardId === undefined ? {} : { trackerBoardId: trackerSelection.trackerBoardId }),
 });
+const trackerSelection = trackerRuntime.selection;
 const WORKER_STALE_AFTER_MS = 15_000;
 
 export function getTrackerStore(): LocalTrackerStore {
@@ -34,7 +32,7 @@ export function getTrackerStore(): LocalTrackerStore {
 }
 
 export function getTrackerProvider() {
-  return trackerRegistry.resolve(trackerSelection.trackerProvider);
+  return trackerRuntime.tracker;
 }
 
 export function getTrackerSelection() {

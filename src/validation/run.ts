@@ -2,8 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   analyzeValidationResult,
-  DETERMINISTIC_VALIDATION_COMMANDS,
-  LIVE_VALIDATION_COMMANDS,
+  resolveValidationCommands,
   type ValidationCommandSpec,
   type ValidationLaneKind,
 } from "./validation-gate.js";
@@ -11,8 +10,8 @@ import {
 const execFileAsync = promisify(execFile);
 
 const lanes: Record<ValidationLaneKind, readonly ValidationCommandSpec[]> = {
-  deterministic: DETERMINISTIC_VALIDATION_COMMANDS,
-  live: LIVE_VALIDATION_COMMANDS,
+  deterministic: resolveValidationCommands("deterministic"),
+  live: resolveValidationCommands("live"),
 };
 
 function usage(): never {

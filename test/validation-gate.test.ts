@@ -3,6 +3,7 @@ import {
   analyzeValidationResult,
   detectExternalDependencyBlocker,
   parseValidationSignal,
+  resolveValidationCommands,
 } from "../src/validation/validation-gate.js";
 
 describe("validation gate classification", () => {
@@ -59,5 +60,28 @@ describe("validation gate classification", () => {
 
     expect(signal.skipped).toBe(true);
     expect(signal.skipReason).toBe("provider_limit_reached");
+  });
+
+  it("adds live tracker validation commands only when provider env is configured", () => {
+    const baseCommands = resolveValidationCommands("live", {});
+    expect(baseCommands.map((command) => command.command)).toEqual([
+      "npm run smoke:cos",
+      "npm run smoke:stack",
+      "npm run smoke:session-control",
+    ]);
+
+    const withLinear = resolveValidationCommands("live", {
+      PIPHONY_LINEAR_API_KEY: "key",
+      PIPHONY_LINEAR_TEAM_KEY: "ENG",
+    });
+    expect(withLinear.map((command) => command.command)).toContain("npm run smoke:tracker-live:linear");
+
+    const withJira = resolveValidationCommands("live", {
+      PIPHONY_JIRA_BASE_URL: "https://acme.atlassian.net",
+      PIPHONY_JIRA_EMAIL: "jira@example.com",
+      PIPHONY_JIRA_API_TOKEN: "token",
+      PIPHONY_JIRA_PROJECT_KEY: "PROJ",
+    });
+    expect(withJira.map((command) => command.command)).toContain("npm run smoke:tracker-live:jira");
   });
 });

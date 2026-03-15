@@ -91,6 +91,20 @@ export const smokeCommands: SmokeCommandDefinition[] = [
     description: "Runs the full dev stack with the real browser extension against an onboarded temp repo fixture.",
     includedInAll: true,
   },
+  {
+    script: "smoke:tracker-live:linear",
+    entrypoint: "src/smoke/tracker-provider-live.ts linear",
+    lane: "live",
+    description: "Opt-in live Linear tracker validation when credentials and a default team/project selection are configured.",
+    includedInAll: false,
+  },
+  {
+    script: "smoke:tracker-live:jira",
+    entrypoint: "src/smoke/tracker-provider-live.ts jira",
+    lane: "live",
+    description: "Opt-in live Jira tracker validation when credentials and a default project selection are configured.",
+    includedInAll: false,
+  },
 ];
 
 export const smokeAllScripts = smokeCommands.filter((command) => command.includedInAll).map((command) => command.script);

@@ -45,7 +45,10 @@ export function createChiefOfStaffTools(services: ChiefOfStaffServices): ToolDef
       parameters: issueContextSchema,
       execute: async (_toolCallId, params: { identifier: string; provider?: string }) => ({
         content: [{ type: "text", text: JSON.stringify(await services.getIssueContext(params), null, 2) }],
-        details: { identifier: params.identifier, provider: params.provider ?? "local" },
+        details: {
+          identifier: params.identifier,
+          ...(params.provider === undefined ? {} : { provider: params.provider }),
+        },
       }),
     },
     {
@@ -56,7 +59,7 @@ export function createChiefOfStaffTools(services: ChiefOfStaffServices): ToolDef
       execute: async (_toolCallId, params: { provider?: string; boardId?: string; projectKey?: string }) => ({
         content: [{ type: "text", text: JSON.stringify(await services.getBoardOverview(params), null, 2) }],
         details: {
-          provider: params.provider ?? "local",
+          ...(params.provider === undefined ? {} : { provider: params.provider }),
           ...(params.boardId === undefined ? {} : { boardId: params.boardId }),
           ...(params.projectKey === undefined ? {} : { projectKey: params.projectKey }),
         },

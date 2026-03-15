@@ -32,6 +32,8 @@
     "smoke:cos": "tsx src/smoke/cos-actor.ts",
     "smoke:web": "tsx src/smoke/web-ui.ts",
     "smoke:stack": "tsx src/smoke/stack-ui.ts",
+    "smoke:tracker-live:linear": "tsx src/smoke/tracker-provider-live.ts linear",
+    "smoke:tracker-live:jira": "tsx src/smoke/tracker-provider-live.ts jira",
     "smoke:pull-based-workflow": "tsx src/smoke/pull-based-workflow.ts",
     "validate:deterministic": "tsx src/validation/run.ts deterministic",
     "validate:live": "tsx src/validation/run.ts live",

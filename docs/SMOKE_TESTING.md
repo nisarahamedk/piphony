@@ -12,6 +12,7 @@ Use:
 - `src/smoke/fixture-project.ts` for temp clone + onboarding
 - `src/smoke/harness.ts` for shared web/stack process startup and readiness checks
 - `npm run smoke:stack` as the canonical real-extension smoke entrypoint
+- `npm run smoke:tracker-live:linear` / `npm run smoke:tracker-live:jira` for opt-in live external tracker checks when env is configured
 - `docs/PRODUCTION_NORTH_STAR.md` as the source-of-truth architectural rule
 
 Do not:
