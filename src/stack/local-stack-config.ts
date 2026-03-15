@@ -1,7 +1,9 @@
 import { join, resolve } from "node:path";
 import { createRunId } from "../core/utils.js";
+import { resolveTrackerSelectionConfig, type TrackerSelectionConfig } from "../config/tracker-provider.js";
+import { parseLocalStackWorkerMode, type LocalStackWorkerMode } from "./local-worker-mode.js";
 
-export interface LocalPiphonyStackConfig {
+export interface LocalPiphonyStackConfig extends TrackerSelectionConfig {
   repoRoot: string;
   trackerDir: string;
   runsRootDir: string;
@@ -11,6 +13,7 @@ export interface LocalPiphonyStackConfig {
   pollIntervalMs: number;
   maxConcurrentWorkers: number;
   instanceId: string;
+  workerMode: LocalStackWorkerMode;
 }
 
 export interface LocalPiphonyStackConfigInput {
@@ -23,6 +26,10 @@ export interface LocalPiphonyStackConfigInput {
   pollIntervalMs?: number;
   maxConcurrentWorkers?: number;
   instanceId?: string;
+  workerMode?: LocalStackWorkerMode;
+  trackerProvider?: TrackerSelectionConfig["trackerProvider"];
+  trackerProjectKey?: string;
+  trackerBoardId?: string;
 }
 
 export function resolveLocalPiphonyStackConfig(
@@ -30,6 +37,7 @@ export function resolveLocalPiphonyStackConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): LocalPiphonyStackConfig {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const trackerSelection = resolveTrackerSelectionConfig(env);
   return {
     repoRoot,
     trackerDir: resolve(options.trackerDir ?? join(repoRoot, ".piphony", "tracker-local")),
@@ -40,6 +48,14 @@ export function resolveLocalPiphonyStackConfig(
     pollIntervalMs: options.pollIntervalMs ?? parsePositiveInteger(env.PIPHONY_POLL_INTERVAL_MS, 3_000, "PIPHONY_POLL_INTERVAL_MS"),
     maxConcurrentWorkers: options.maxConcurrentWorkers ?? parsePositiveInteger(env.PIPHONY_MAX_CONCURRENT_WORKERS, 1, "PIPHONY_MAX_CONCURRENT_WORKERS"),
     instanceId: options.instanceId ?? (env.PIPHONY_ORCHESTRATOR_ID?.trim() || createRunId("orchestrator")),
+    workerMode: options.workerMode ?? parseLocalStackWorkerMode(env.PIPHONY_STACK_WORKER_MODE, "real", "PIPHONY_STACK_WORKER_MODE"),
+    trackerProvider: options.trackerProvider ?? trackerSelection.trackerProvider,
+    ...((options.trackerProjectKey ?? trackerSelection.trackerProjectKey) === undefined
+      ? {}
+      : { trackerProjectKey: options.trackerProjectKey ?? trackerSelection.trackerProjectKey }),
+    ...((options.trackerBoardId ?? trackerSelection.trackerBoardId) === undefined
+      ? {}
+      : { trackerBoardId: options.trackerBoardId ?? trackerSelection.trackerBoardId }),
   };
 }
 

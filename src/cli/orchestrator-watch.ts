@@ -3,15 +3,32 @@ import { attemptCleanup } from "../core/cleanup.js";
 import { errorMessage } from "../core/errors.js";
 import { Orchestrator } from "../core/orchestrator.js";
 import { parseOrchestratorWatchConfig } from "./orchestrator-watch-config.js";
-import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { LocalTrackerStatusSink } from "../tracker/local/status-sink.js";
 import { LocalTrackerStore } from "../tracker/local/state.js";
-import { LocalTrackerSmokeWorker } from "../ui/worker.js";
+import { createTrackerProviderRegistry } from "../tracker/provider-registry.js";
+import { ProviderCapacityService } from "../pi/provider-middleware.js";
+import { createLocalStackWorker } from "../stack/local-worker-factory.js";
 
 const config = parseOrchestratorWatchConfig(process.env);
 const trackerStore = new LocalTrackerStore({ trackerDir: config.trackerDir });
-const tracker = createLocalTrackerAdapter(config.trackerDir);
-const worker = new LocalTrackerSmokeWorker(config.repoRoot, config.trackerDir);
+const trackerRegistry = createTrackerProviderRegistry({
+  trackerDir: config.trackerDir,
+  env: process.env,
+  ...(config.trackerProjectKey === undefined ? {} : { trackerProjectKey: config.trackerProjectKey }),
+  ...(config.trackerBoardId === undefined ? {} : { trackerBoardId: config.trackerBoardId }),
+});
+const tracker = trackerRegistry.resolve(config.trackerProvider);
+if (config.workerMode === "smoke" && tracker.provider !== "local") {
+  throw new Error("Smoke worker mode requires the local tracker provider");
+}
+const providerCapacityService = new ProviderCapacityService();
+const worker = createLocalStackWorker({
+  mode: config.workerMode,
+  repoRoot: config.repoRoot,
+  trackerDir: config.trackerDir,
+  tracker,
+  providerCapacityService,
+});
 const orchestrator = new Orchestrator({
   tracker,
   worker,
@@ -49,7 +66,7 @@ process.on("SIGTERM", () => {
 });
 
 console.log(
-  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId})`,
+  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId}, workerMode=${config.workerMode}, trackerProvider=${config.trackerProvider}${config.trackerProjectKey === undefined ? "" : `, trackerProjectKey=${config.trackerProjectKey}`}${config.trackerBoardId === undefined ? "" : `, trackerBoardId=${config.trackerBoardId}`})`,
 );
 
 for (;;) {

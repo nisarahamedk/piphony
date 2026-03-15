@@ -7,12 +7,13 @@ import { ensureDir } from "../core/utils.js";
 import { createChiefOfStaffRegistry } from "../cos/actor.js";
 import { createLocalChiefOfStaffServices } from "../cos/local-services.js";
 import { ProviderCapacityService } from "../pi/provider-middleware.js";
-import { LocalTrackerSmokeWorker } from "../ui/worker.js";
-import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { LocalTrackerStatusSink } from "../tracker/local/status-sink.js";
 import { LocalTrackerStore } from "../tracker/local/state.js";
+import { createTrackerProviderRegistry } from "../tracker/provider-registry.js";
 import { startChiefOfStaffServer } from "../cos/server.js";
 import { resolveLocalPiphonyStackConfig, type LocalPiphonyStackConfigInput } from "./local-stack-config.js";
+import { createLocalStackWorker } from "./local-worker-factory.js";
+import type { LocalStackWorkerMode } from "./local-worker-mode.js";
 
 export interface LocalPiphonyStackOptions extends LocalPiphonyStackConfigInput {}
 
@@ -23,6 +24,10 @@ export interface StartedLocalPiphonyStack {
   readonly sessionRootDir: string;
   readonly cosEndpoint: string;
   readonly cosPort: number;
+  readonly workerMode: LocalStackWorkerMode;
+  readonly trackerProvider: LocalPiphonyStackOptions["trackerProvider"];
+  readonly trackerProjectKey?: string;
+  readonly trackerBoardId?: string;
   readonly activeRunRegistry: ActiveRunRegistry;
   readonly providerCapacityService: ProviderCapacityService;
   listActiveRuns(): ActiveRunSnapshot[];
@@ -38,12 +43,28 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
 
   const trackerStore = new LocalTrackerStore({ trackerDir: config.trackerDir });
   await trackerStore.ensure();
-  const tracker = createLocalTrackerAdapter(config.trackerDir);
+  const trackerRegistry = createTrackerProviderRegistry({
+    trackerDir: config.trackerDir,
+    env: process.env,
+    ...(config.trackerProjectKey === undefined ? {} : { trackerProjectKey: config.trackerProjectKey }),
+    ...(config.trackerBoardId === undefined ? {} : { trackerBoardId: config.trackerBoardId }),
+  });
+  const tracker = trackerRegistry.resolve(config.trackerProvider);
+  if (config.workerMode === "smoke" && tracker.provider !== "local") {
+    throw new Error("Smoke worker mode requires the local tracker provider");
+  }
   const activeRunRegistry = new ActiveRunRegistry();
   const providerCapacityService = new ProviderCapacityService();
+  const worker = createLocalStackWorker({
+    mode: config.workerMode,
+    repoRoot: config.repoRoot,
+    trackerDir: config.trackerDir,
+    tracker,
+    providerCapacityService,
+  });
   const orchestrator = new Orchestrator({
     tracker,
-    worker: new LocalTrackerSmokeWorker(config.repoRoot, config.trackerDir, providerCapacityService),
+    worker,
     runsRootDir: config.runsRootDir,
     agentType: "implementation",
     pollIntervalMs: config.pollIntervalMs,
@@ -60,6 +81,8 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
       trackerDir: config.trackerDir,
       runsRootDir: config.runsRootDir,
       activeRunRegistry,
+      trackerRegistry,
+      env: process.env,
     }),
     providerCapacityService,
   });
@@ -88,6 +111,10 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
     sessionRootDir: config.sessionRootDir,
     cosEndpoint: cosServer.endpoint,
     cosPort: config.cosPort,
+    workerMode: config.workerMode,
+    trackerProvider: config.trackerProvider,
+    ...(config.trackerProjectKey === undefined ? {} : { trackerProjectKey: config.trackerProjectKey }),
+    ...(config.trackerBoardId === undefined ? {} : { trackerBoardId: config.trackerBoardId }),
     activeRunRegistry,
     providerCapacityService,
     listActiveRuns: () => activeRunRegistry.listSnapshots(),

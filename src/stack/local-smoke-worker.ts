@@ -1,19 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import type { ProviderCapacityService } from "../pi/provider-middleware.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 
 export class LocalTrackerSmokeWorker implements RunWorker {
   readonly name = "implementation";
 
-  constructor(
-    private readonly repoRoot: string,
-    private readonly trackerDir: string,
-    private readonly providerCapacityService?: ProviderCapacityService,
-  ) {
-    void this.repoRoot;
-    void this.providerCapacityService;
-  }
+  constructor(private readonly trackerDir: string) {}
 
   async execute(context: RunWorkerContext) {
     await context.logger.emit("ui.workflow.issue.started", {

@@ -1,5 +1,5 @@
 {
   "extensions": [
-    "-extensions/validation-gate.ts"
+    "+extensions/validation-gate.ts"
   ]
 }

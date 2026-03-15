@@ -32,36 +32,47 @@ export const createIssue = createServerFn({ method: "POST" })
     }
 
     const {
+      getTrackerProvider,
+      getTrackerSelection,
       getTrackerStore,
       nextSuggestedIdentifier,
       normalizeLabels,
       normalizeOptionalString,
-      normalizePriority,
       readDashboardSnapshot,
     } = await loadServerDataModule();
-    const identifier = normalizeOptionalString(input.identifier) ?? await nextSuggestedIdentifier();
+    const tracker = getTrackerProvider();
+    const selection = getTrackerSelection();
+    const identifier = normalizeOptionalString(input.identifier);
     const description = normalizeOptionalString(input.description);
-    const assignee = normalizeOptionalString(input.assignee);
-    const priority = normalizePriority(input.priority);
-    const branchName = normalizeOptionalString(input.branchName);
-    const prUrl = normalizeOptionalString(input.prUrl);
-    const store = getTrackerStore();
-    await store.createIssue({
-      identifier,
-      title,
-      ...(description === undefined ? {} : { description }),
-      state: "backlog",
-      labels: normalizeLabels(input.labels),
-      ...(assignee === undefined ? {} : { assignee }),
-      ...(priority === undefined ? {} : { priority }),
-      ...(branchName === undefined ? {} : { branchName }),
-      ...(prUrl === undefined ? {} : { prUrl }),
-      audit: {
-        createdFrom: "piphony_web",
-        createdBy: "human",
-        createdViaUiAt: nowIso(),
-      },
-    });
+    const labels = normalizeLabels(input.labels);
+
+    if (selection.trackerProvider !== "local" && identifier !== undefined) {
+      throw new Error(`Explicit identifiers are only supported for the local tracker provider, got ${selection.trackerProvider}`);
+    }
+
+    if (tracker.provider === "local") {
+      const store = getTrackerStore();
+      await store.createIssue({
+        identifier: identifier ?? await nextSuggestedIdentifier(),
+        title,
+        ...(description === undefined ? {} : { description }),
+        state: "backlog",
+        labels,
+        audit: {
+          createdFrom: "piphony_web",
+          createdBy: "human",
+          createdViaUiAt: nowIso(),
+        },
+      });
+    } else {
+      await tracker.createIssue({
+        title,
+        ...(description === undefined ? {} : { description }),
+        state: "backlog",
+        labels,
+        ...(selection.trackerProjectKey === undefined ? {} : { projectKey: selection.trackerProjectKey }),
+      });
+    }
 
     return readDashboardSnapshot();
   });
@@ -80,6 +91,7 @@ export const updateIssue = createServerFn({ method: "POST" })
     }
 
     const {
+      getTrackerProvider,
       getTrackerStore,
       normalizeLabels,
       normalizeOptionalString,
@@ -87,50 +99,51 @@ export const updateIssue = createServerFn({ method: "POST" })
       readDashboardSnapshot,
     } = await loadServerDataModule();
     const nextState = parseCanonicalState(input.state, "issue state");
-    const store = getTrackerStore();
-    await store.updateIssue(id, (issue) => {
-      issue.title = title;
-      const description = normalizeOptionalString(input.description);
-      if (description === undefined) {
-        delete issue.description;
-      } else {
-        issue.description = description;
-      }
-      issue.labels = normalizeLabels(input.labels);
-      const assignee = normalizeOptionalString(input.assignee);
-      if (assignee === undefined) {
-        delete issue.assignee;
-      } else {
-        issue.assignee = assignee;
-      }
-      assertValidWorkItemTransition(issue.state, nextState);
-      issue.state = nextState;
+    const tracker = getTrackerProvider();
+    const current = await tracker.fetchWorkItemById(id) ?? await tracker.fetchWorkItemByIdentifier(id);
+    if (current === undefined) {
+      throw new Error(`Issue not found: ${id}`);
+    }
+    assertValidWorkItemTransition(current.state, nextState);
 
-      const priority = normalizePriority(input.priority);
-      const branchName = normalizeOptionalString(input.branchName);
-      const prUrl = normalizeOptionalString(input.prUrl);
+    const description = normalizeOptionalString(input.description);
+    const labels = normalizeLabels(input.labels);
+    const assignee = normalizeOptionalString(input.assignee);
+    const priority = normalizePriority(input.priority);
+    const branchName = normalizeOptionalString(input.branchName);
+    const prUrl = normalizeOptionalString(input.prUrl);
 
-      if (priority === undefined) {
-        delete issue.priority;
-      } else {
-        issue.priority = priority;
+    if (tracker.provider !== "local") {
+      if (assignee !== current.assignee) {
+        throw new Error(`${tracker.provider} assignee editing is not implemented in the web UI yet`);
       }
-      if (branchName === undefined) {
-        delete issue.branchName;
-      } else {
-        issue.branchName = branchName;
+      if (branchName !== current.branchName) {
+        throw new Error(`${tracker.provider} branch name editing is not implemented in the web UI yet`);
       }
-      if (prUrl === undefined) {
-        delete issue.prUrl;
-      } else {
-        issue.prUrl = prUrl;
+      if (prUrl !== current.prUrl) {
+        throw new Error(`${tracker.provider} PR URL editing is not implemented in the web UI yet`);
       }
-      issue.audit = {
-        ...(issue.audit ?? {}),
+    }
+
+    await tracker.updateIssue(current.externalId, {
+      title,
+      description,
+      labels,
+      assignee,
+      priority,
+      branchName,
+      prUrl,
+      state: nextState,
+    });
+
+    if (tracker.provider === "local") {
+      const store = getTrackerStore();
+      await store.updateIssueAudit(id, (audit) => ({
+        ...audit,
         updatedFrom: "piphony_web",
         updatedViaUiAt: nowIso(),
-      };
-    });
+      }));
+    }
 
     return readDashboardSnapshot();
   });
@@ -148,20 +161,25 @@ export const appendIssueComment = createServerFn({ method: "POST" })
       throw new Error("Comment body is required");
     }
 
-    const { getTrackerStore, normalizeOptionalString, readDashboardSnapshot } = await loadServerDataModule();
-    const store = getTrackerStore();
+    const { getTrackerProvider, getTrackerStore, normalizeOptionalString, readDashboardSnapshot } = await loadServerDataModule();
+    const tracker = getTrackerProvider();
     const createdAt = nowIso();
-    await store.appendIssueComment(id, {
-      id: crypto.randomUUID(),
+    const issue = await tracker.fetchWorkItemById(id) ?? await tracker.fetchWorkItemByIdentifier(id);
+    if (issue === undefined) {
+      throw new Error(`Issue not found: ${id}`);
+    }
+    await tracker.appendComment(issue.externalId, {
       body,
       author: normalizeOptionalString(input.author) ?? "human",
-      createdAt,
     });
-    await store.updateIssueAudit(id, (audit) => ({
-      ...audit,
-      lastCommentedFrom: "piphony_web",
-      lastCommentedAt: createdAt,
-    }));
+    if (tracker.provider === "local") {
+      const store = getTrackerStore();
+      await store.updateIssueAudit(id, (audit) => ({
+        ...audit,
+        lastCommentedFrom: "piphony_web",
+        lastCommentedAt: createdAt,
+      }));
+    }
     return readDashboardSnapshot();
   });
 
@@ -174,20 +192,23 @@ export const transitionIssue = createServerFn({ method: "POST" })
       throw new Error("Issue id is required");
     }
 
-    const { getTrackerStore, readDashboardSnapshot } = await loadServerDataModule();
+    const { getTrackerProvider, getTrackerStore, readDashboardSnapshot } = await loadServerDataModule();
     const nextState = parseCanonicalState(input.state, "issue state");
-    const store = getTrackerStore();
-    const current = await store.findIssue(id);
+    const tracker = getTrackerProvider();
+    const current = await tracker.fetchWorkItemById(id) ?? await tracker.fetchWorkItemByIdentifier(id);
     if (current === undefined) {
       throw new Error(`Issue not found: ${id}`);
     }
     assertValidWorkItemTransition(current.state, nextState);
-    await store.transitionIssue(id, nextState);
-    await store.updateIssueAudit(id, (audit) => ({
-      ...audit,
-      updatedFrom: "piphony_web",
-      updatedViaUiAt: nowIso(),
-    }));
+    await tracker.applyMutation(current.externalId, { type: "transition", state: nextState });
+    if (tracker.provider === "local") {
+      const store = getTrackerStore();
+      await store.updateIssueAudit(id, (audit) => ({
+        ...audit,
+        updatedFrom: "piphony_web",
+        updatedViaUiAt: nowIso(),
+      }));
+    }
     return readDashboardSnapshot();
   });
 

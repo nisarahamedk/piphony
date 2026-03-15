@@ -12,3 +12,4 @@ console.log("- npm run smoke:cos");
 console.log("- npm run smoke:web");
 console.log("- npm run smoke:extension");
 console.log("- npm run smoke:stack");
+console.log("- npm run smoke:pull-based-workflow");

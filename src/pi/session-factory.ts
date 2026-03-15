@@ -204,12 +204,19 @@ function resolveRetrySettings(requestClass: ProviderRequestClass, provider: stri
 
 function resolvePreferredModel(available: any[], preferred: string): any | undefined {
   const normalizedPreferred = normalizeForMatch(preferred);
-  return (
+  const found =
     available.find((model) => normalizeForMatch(`${model.provider}/${model.id}`) === normalizedPreferred) ??
     available.find((model) => normalizeForMatch(model.id) === normalizedPreferred) ??
     available.find((model) => normalizeForMatch(String(model.label ?? "")) === normalizedPreferred) ??
     available.find((model) => normalizeForMatch(`${model.provider}/${model.id}`).includes(normalizedPreferred)) ??
-    available.find((model) => normalizeForMatch(model.id).includes(normalizedPreferred)) ??
-    available[0]
-  );
+    available.find((model) => normalizeForMatch(model.id).includes(normalizedPreferred));
+
+  if (found === undefined) {
+    throw new Error(
+      `Requested model '${preferred}' is not available. ` +
+      `Available models: ${available.map((m) => `${m.provider}/${m.id}`).join(", ")}`,
+    );
+  }
+
+  return found;
 }

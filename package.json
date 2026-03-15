@@ -32,6 +32,7 @@
     "smoke:web": "tsx src/smoke/web-ui.ts",
     "smoke:extension": "tsx src/smoke/stack-ui.ts",
     "smoke:stack": "tsx src/smoke/stack-ui.ts",
+    "smoke:pull-based-workflow": "tsx src/smoke/pull-based-workflow.ts",
     "validate:deterministic": "tsx src/validation/run.ts deterministic",
     "validate:live": "tsx src/validation/run.ts live",
     "validate:main": "npm run validate:deterministic && npm run validate:live",

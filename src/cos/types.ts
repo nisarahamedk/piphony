@@ -43,11 +43,12 @@ export interface CreateIssueInput {
   description?: string;
   state?: WorkItem["state"];
   labels?: string[];
+  projectKey?: string;
 }
 
 export interface ChiefOfStaffServices {
   getIssueContext(input: { provider?: string; identifier: string }): Promise<ChiefOfStaffIssueContext>;
-  getBoardOverview(input: { provider?: string }): Promise<ChiefOfStaffBoardOverview>;
+  getBoardOverview(input: { provider?: string; boardId?: string; projectKey?: string }): Promise<ChiefOfStaffBoardOverview>;
   listActiveRuns(): Promise<ActiveRunSnapshot[]>;
   getRunDetail(runId: string): Promise<RunInspection>;
   steerRun(runId: string, message: string): Promise<void>;

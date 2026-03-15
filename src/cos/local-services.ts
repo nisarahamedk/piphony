@@ -1,23 +1,33 @@
 import { attemptCleanup } from "../core/cleanup.js";
-import { CANONICAL_STATES, type WorkItem } from "../core/types.js";
-import { errorMessage } from "../core/errors.js";
+import type { WorkItem } from "../core/types.js";
 import type { ActiveRunRegistry } from "../core/active-run-registry.js";
 import { inspectRun, listRunSummaries } from "../observability/index.js";
-import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
+import { resolveTrackerSelectionConfig } from "../config/tracker-provider.js";
+import { createTrackerProviderRegistry, type TrackerProviderRegistry } from "../tracker/provider-registry.js";
 import type { ChiefOfStaffBoardOverview, ChiefOfStaffIssueContext, ChiefOfStaffServices, CreateIssueInput } from "./types.js";
 
 export interface LocalChiefOfStaffServicesOptions {
   trackerDir: string;
   runsRootDir: string;
   activeRunRegistry: ActiveRunRegistry;
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: typeof fetch;
+  trackerRegistry?: TrackerProviderRegistry;
 }
 
 export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServicesOptions): ChiefOfStaffServices {
-  const tracker = createLocalTrackerAdapter(options.trackerDir);
+  const trackerSelection = resolveTrackerSelectionConfig(options.env ?? process.env);
+  const trackerRegistry = options.trackerRegistry ?? createTrackerProviderRegistry({
+    trackerDir: options.trackerDir,
+    ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+    ...(trackerSelection.trackerProjectKey === undefined ? {} : { trackerProjectKey: trackerSelection.trackerProjectKey }),
+    ...(trackerSelection.trackerBoardId === undefined ? {} : { trackerBoardId: trackerSelection.trackerBoardId }),
+  });
 
   return {
     async getIssueContext(input): Promise<ChiefOfStaffIssueContext> {
-      ensureProvider(input.provider);
+      const tracker = trackerRegistry.resolve(input.provider);
       const issue = await tracker.fetchWorkItemByIdentifier(input.identifier);
       const activeRun = trackerMatch(issue, options.activeRunRegistry);
       const latestRun = issue === undefined ? undefined : await findLatestRunForWorkItem(options.runsRootDir, issue.externalId);
@@ -29,11 +39,14 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
     },
 
     async getBoardOverview(input): Promise<ChiefOfStaffBoardOverview> {
-      const provider = ensureProvider(input.provider);
-      const issues = await tracker.fetchWorkItemsByState([...CANONICAL_STATES]);
+      const tracker = trackerRegistry.resolve(input.provider);
+      const issues = await tracker.fetchBoardWorkItems({
+        ...(input.boardId === undefined ? {} : { boardId: input.boardId }),
+        ...(input.projectKey === undefined ? {} : { projectKey: input.projectKey }),
+      });
       const activeRuns = options.activeRunRegistry.listSnapshots();
       return {
-        provider,
+        provider: tracker.provider,
         issues,
         activeRuns,
         needsAttention: [
@@ -83,7 +96,7 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
     },
 
     async retryIssue(identifier: string, provider?: string): Promise<WorkItem> {
-      ensureProvider(provider);
+      const tracker = trackerRegistry.resolve(provider);
       const issue = await tracker.fetchWorkItemByIdentifier(identifier);
       if (issue === undefined) {
         throw new Error(`Issue not found for retry: ${identifier}`);
@@ -108,25 +121,16 @@ export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServic
     },
 
     async createIssue(input: CreateIssueInput): Promise<WorkItem> {
-      ensureProvider(input.provider);
-      const identifier = await nextSuggestedIdentifier(tracker.store.loadIssues.bind(tracker.store));
-      const issue = await tracker.store.createIssue({
-        identifier,
+      const tracker = trackerRegistry.resolve(input.provider);
+      return tracker.createIssue({
         title: input.title,
         ...(input.description === undefined ? {} : { description: input.description }),
-        state: input.state ?? "backlog",
-        labels: input.labels ?? [],
+        ...(input.state === undefined ? {} : { state: input.state }),
+        ...(input.labels === undefined ? {} : { labels: input.labels }),
+        ...(input.projectKey === undefined ? {} : { projectKey: input.projectKey }),
       });
-      return tracker.normalize(issue);
     },
   };
-}
-
-function ensureProvider(provider: string | undefined): string {
-  if (provider === undefined || provider === "" || provider === "local") {
-    return "local";
-  }
-  throw new Error(`Unsupported tracker provider in v1 OSS: ${provider}`);
 }
 
 function trackerMatch(issue: WorkItem | undefined, registry: ActiveRunRegistry) {
@@ -134,15 +138,6 @@ function trackerMatch(issue: WorkItem | undefined, registry: ActiveRunRegistry) 
     return undefined;
   }
   return registry.getByWorkItemId(issue.externalId) ?? registry.getByIdentifier(issue.identifier);
-}
-
-async function nextSuggestedIdentifier(loadIssues: () => Promise<Array<{ identifier: string }>>): Promise<string> {
-  const issues = await loadIssues();
-  const max = issues.reduce((highest, issue) => {
-    const match = issue.identifier.match(/(\d+)$/);
-    return match === null ? highest : Math.max(highest, Number(match[1]));
-  }, 100);
-  return `LOCAL-${max + 1}`;
 }
 
 async function findLatestRunForWorkItem(runsRootDir: string, workItemId: string) {

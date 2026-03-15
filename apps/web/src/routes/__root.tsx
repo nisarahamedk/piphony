@@ -13,7 +13,7 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Board-first local tracker and run observability surface for Piphony. Built to smoke test autonomous delivery without Linear integration.",
+          "Board-first local tracker and run observability surface for Piphony, with extension-first Linear and Jira tracker context support.",
       },
     ],
     links: [

@@ -9,7 +9,7 @@ import {
   type WorkItem,
 } from "../../core/types.js";
 import { assertValidWorkItemTransition } from "../../core/work-item-transitions.js";
-import { nowIso } from "../../core/utils.js";
+import { nowIso, stripUndefined } from "../../core/utils.js";
 import { LocalTrackerStore } from "./state.js";
 import type { LocalIssue } from "./types.js";
 
@@ -45,13 +45,15 @@ export class LocalTrackerAdapter implements TrackerAdapter {
       externalId: local.id,
       identifier: local.identifier,
       title: local.title,
-      ...(local.description === undefined ? {} : { description: local.description }),
+      ...stripUndefined({
+        description: local.description,
+        assignee: local.assignee,
+        priority: local.priority,
+        branchName: local.branchName,
+        prUrl: local.prUrl,
+      }),
       state: local.state,
       labels: [...local.labels],
-      ...(local.assignee === undefined ? {} : { assignee: local.assignee }),
-      ...(local.priority === undefined ? {} : { priority: local.priority }),
-      ...(local.branchName === undefined ? {} : { branchName: local.branchName }),
-      ...(local.prUrl === undefined ? {} : { prUrl: local.prUrl }),
       url: local.url,
       metadata: { ...local.metadata },
       createdAt: local.createdAt,

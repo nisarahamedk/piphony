@@ -146,7 +146,7 @@ async function killExistingStack(): Promise<void> {
 function startDevStack() {
   return spawn("npm", ["run", "dev:stack"], {
     cwd: repoRoot,
-    env: process.env,
+    env: { ...process.env, PIPHONY_STACK_WORKER_MODE: "smoke" },
     stdio: "inherit",
   });
 }

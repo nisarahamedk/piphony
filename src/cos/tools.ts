@@ -3,12 +3,14 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { ChiefOfStaffServices } from "./types.js";
 
 const issueContextSchema = Type.Object({
-  identifier: Type.String({ description: "Issue identifier, e.g. LOCAL-123 or LIN-123" }),
-  provider: Type.Optional(Type.String({ description: "Tracker provider. Defaults to local in v1 OSS." })),
+  identifier: Type.String({ description: "Issue identifier, e.g. LOCAL-123, LIN-123, or PROJ-123" }),
+  provider: Type.Optional(Type.String({ description: "Tracker provider. Supports local, linear, and jira." })),
 });
 
 const boardOverviewSchema = Type.Object({
-  provider: Type.Optional(Type.String({ description: "Tracker provider. Defaults to local in v1 OSS." })),
+  provider: Type.Optional(Type.String({ description: "Tracker provider. Supports local, linear, and jira." })),
+  boardId: Type.Optional(Type.String({ description: "Optional board identifier when the tracker exposes one." })),
+  projectKey: Type.Optional(Type.String({ description: "Optional project/team key for board-scoped queries." })),
 });
 
 const runIdSchema = Type.Object({
@@ -25,12 +27,13 @@ const createIssueSchema = Type.Object({
   description: Type.Optional(Type.String({ description: "Issue description" })),
   state: Type.Optional(Type.String({ description: "Initial canonical workflow state" })),
   labels: Type.Optional(Type.Array(Type.String(), { description: "Issue labels" })),
-  provider: Type.Optional(Type.String({ description: "Tracker provider. Defaults to local in v1 OSS." })),
+  provider: Type.Optional(Type.String({ description: "Tracker provider. Supports local, linear, and jira." })),
+  projectKey: Type.Optional(Type.String({ description: "Optional project/team key for provider-scoped issue creation." })),
 });
 
 const retryIssueSchema = Type.Object({
-  identifier: Type.String({ description: "Issue identifier to retry, e.g. LOCAL-123" }),
-  provider: Type.Optional(Type.String({ description: "Tracker provider. Defaults to local in v1 OSS." })),
+  identifier: Type.String({ description: "Issue identifier to retry, e.g. LOCAL-123, LIN-123, or PROJ-123" }),
+  provider: Type.Optional(Type.String({ description: "Tracker provider. Supports local, linear, and jira." })),
 });
 
 export function createChiefOfStaffTools(services: ChiefOfStaffServices): ToolDefinition[] {
@@ -50,9 +53,13 @@ export function createChiefOfStaffTools(services: ChiefOfStaffServices): ToolDef
       label: "piphony_get_board_overview",
       description: "Get board/overview state including open issues, active runs, and items needing attention.",
       parameters: boardOverviewSchema,
-      execute: async (_toolCallId, params: { provider?: string }) => ({
+      execute: async (_toolCallId, params: { provider?: string; boardId?: string; projectKey?: string }) => ({
         content: [{ type: "text", text: JSON.stringify(await services.getBoardOverview(params), null, 2) }],
-        details: { provider: params.provider ?? "local" },
+        details: {
+          provider: params.provider ?? "local",
+          ...(params.boardId === undefined ? {} : { boardId: params.boardId }),
+          ...(params.projectKey === undefined ? {} : { projectKey: params.projectKey }),
+        },
       }),
     },
     {
@@ -142,15 +149,20 @@ export function createChiefOfStaffTools(services: ChiefOfStaffServices): ToolDef
       label: "piphony_create_issue",
       description: "Create a new tracker issue or follow-up ticket.",
       parameters: createIssueSchema,
-      execute: async (_toolCallId, params: { title: string; description?: string; state?: string; labels?: string[]; provider?: string }) => ({
+      execute: async (_toolCallId, params: { title: string; description?: string; state?: string; labels?: string[]; provider?: string; projectKey?: string }) => ({
         content: [{ type: "text", text: JSON.stringify(await services.createIssue({
           title: params.title,
           ...(params.description === undefined ? {} : { description: params.description }),
           ...(params.state === undefined ? {} : { state: params.state as never }),
           ...(params.labels === undefined ? {} : { labels: params.labels }),
           ...(params.provider === undefined ? {} : { provider: params.provider }),
+          ...(params.projectKey === undefined ? {} : { projectKey: params.projectKey }),
         }), null, 2) }],
-        details: { title: params.title },
+        details: {
+          title: params.title,
+          ...(params.provider === undefined ? {} : { provider: params.provider }),
+          ...(params.projectKey === undefined ? {} : { projectKey: params.projectKey }),
+        },
       }),
     },
   ];

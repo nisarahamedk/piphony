@@ -46,9 +46,25 @@ export function resolveFrom(baseDir: string, maybeRelativePath: string): string 
   return resolve(baseDir, maybeRelativePath);
 }
 
-export function withOptional<T extends object, K extends string, V>(base: T, key: K, value: V | undefined): T & Partial<Record<K, V>> {
-  if (value === undefined) {
-    return base;
+/**
+ * Strips undefined values from an object.
+ * Use at transport/persistence boundaries to create clean serializable objects.
+ * 
+ * @example
+ * const cleaned = stripUndefined({
+ *   id: "123",
+ *   name: undefined,
+ *   description: "test"
+ * });
+ * // cleaned: { id: "123", description: "test" }
+ */
+export function stripUndefined<T extends object>(obj: T): Partial<{[K in keyof T]: T[K]}> {
+  const result: Partial<{[K in keyof T]: T[K]}> = {};
+  for (const key of Object.keys(obj) as (keyof T)[]) {
+    const value = obj[key];
+    if (value !== undefined) {
+      (result as Record<keyof T, T[keyof T]>)[key] = value;
+    }
   }
-  return { ...base, [key]: value } as T & Partial<Record<K, V>>;
+  return result;
 }

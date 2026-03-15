@@ -1,8 +1,10 @@
 import { basename } from "node:path";
-import { CANONICAL_STATES, type CanonicalState, type WorkerStatus } from "@piphony/core/types";
+import { CANONICAL_STATES, type CanonicalState, type WorkItem, type WorkerStatus } from "@piphony/core/types";
 import { nowIso } from "@piphony/core/utils";
 import { parseCanonicalState } from "@piphony/core/work-item-transitions";
 import { inspectRun, listRuns, listRunSummaries, type RunInspection, type RunSummaryInspection } from "@piphony/observability";
+import { resolveTrackerSelectionConfig } from "@piphony/config/tracker-provider";
+import { createTrackerProviderRegistry } from "@piphony/tracker/provider-registry";
 import { resolveWebServerPaths } from "./config";
 import { LocalTrackerStore } from "@piphony/tracker/local/state";
 import type { LocalIssue, LocalTrackerState, LocalTrackerWorker } from "@piphony/tracker/local/types";
@@ -18,10 +20,25 @@ import type {
 const webServerPaths = resolveWebServerPaths();
 const trackerDir = webServerPaths.trackerDir;
 const runsDir = webServerPaths.runsRootDir;
+const trackerSelection = resolveTrackerSelectionConfig(process.env);
+const trackerRegistry = createTrackerProviderRegistry({
+  trackerDir,
+  env: process.env,
+  ...(trackerSelection.trackerProjectKey === undefined ? {} : { trackerProjectKey: trackerSelection.trackerProjectKey }),
+  ...(trackerSelection.trackerBoardId === undefined ? {} : { trackerBoardId: trackerSelection.trackerBoardId }),
+});
 const WORKER_STALE_AFTER_MS = 15_000;
 
 export function getTrackerStore(): LocalTrackerStore {
   return new LocalTrackerStore({ trackerDir });
+}
+
+export function getTrackerProvider() {
+  return trackerRegistry.resolve(trackerSelection.trackerProvider);
+}
+
+export function getTrackerSelection() {
+  return trackerSelection;
 }
 
 export async function readDashboardSnapshot(): Promise<DashboardSnapshot> {
@@ -54,15 +71,32 @@ export async function readDashboardSnapshot(): Promise<DashboardSnapshot> {
 }
 
 export async function readIssues(): Promise<DashboardIssue[]> {
-  const state = await getTrackerStore().load();
-  return state.issues
-    .map(serializeIssue)
+  if (trackerSelection.trackerProvider === "local") {
+    const state = await getTrackerStore().load();
+    return state.issues
+      .map(serializeLocalIssue)
+      .sort((left, right) => left.identifier.localeCompare(right.identifier, undefined, { numeric: true }));
+  }
+
+  const issues = await getTrackerProvider().fetchBoardWorkItems({
+    ...(trackerSelection.trackerProjectKey === undefined ? {} : { projectKey: trackerSelection.trackerProjectKey }),
+    ...(trackerSelection.trackerBoardId === undefined ? {} : { boardId: trackerSelection.trackerBoardId }),
+  });
+  return issues
+    .map(serializeWorkItem)
     .sort((left, right) => left.identifier.localeCompare(right.identifier, undefined, { numeric: true }));
 }
 
 export async function readIssueById(id: string): Promise<DashboardIssue | undefined> {
-  const issues = await readIssues();
-  return issues.find((issue) => issue.id === id || issue.identifier === id);
+  if (trackerSelection.trackerProvider === "local") {
+    const state = await getTrackerStore().load();
+    const issue = state.issues.find((item) => item.id === id || item.identifier === id);
+    return issue === undefined ? undefined : serializeLocalIssue(issue);
+  }
+
+  const tracker = getTrackerProvider();
+  const issue = await tracker.fetchWorkItemById(id) ?? await tracker.fetchWorkItemByIdentifier(id);
+  return issue === undefined ? undefined : serializeWorkItem(issue);
 }
 
 export async function readWorkers(): Promise<DashboardWorkerStatus[]> {
@@ -101,6 +135,9 @@ export async function readRunDetail(runId: string): Promise<RunDetail | undefine
 }
 
 export async function nextSuggestedIdentifier(): Promise<string> {
+  if (trackerSelection.trackerProvider !== "local") {
+    throw new Error(`Suggested identifiers are only available for the local tracker provider, got ${trackerSelection.trackerProvider}`);
+  }
   const state = await getTrackerStore().load();
   const max = state.issues.reduce((highest, issue) => {
     const match = issue.identifier.match(/(\d+)$/);
@@ -135,7 +172,7 @@ export function normalizePriority(value?: string): DashboardIssue["priority"] | 
     : undefined;
 }
 
-function serializeIssue(issue: LocalIssue): DashboardIssue {
+function serializeLocalIssue(issue: LocalIssue): DashboardIssue {
   const description = normalizeOptionalString(issue.description);
   const assignee = normalizeOptionalString(issue.assignee);
   const url = normalizeOptionalString(issue.url);
@@ -155,6 +192,30 @@ function serializeIssue(issue: LocalIssue): DashboardIssue {
     ...(issue.audit === undefined ? {} : { audit: { ...issue.audit } }),
     comments: issue.comments.map((comment) => ({ ...comment })),
     artifacts: issue.artifacts.map((artifact) => ({ ...artifact })),
+    createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt,
+  };
+}
+
+function serializeWorkItem(issue: WorkItem): DashboardIssue {
+  const description = normalizeOptionalString(issue.description);
+  const assignee = normalizeOptionalString(issue.assignee);
+  const url = normalizeOptionalString(issue.url);
+
+  return {
+    id: issue.externalId,
+    identifier: issue.identifier,
+    title: issue.title,
+    ...(description === undefined ? {} : { description }),
+    state: issue.state,
+    labels: [...issue.labels],
+    ...(assignee === undefined ? {} : { assignee }),
+    ...(issue.priority === undefined ? {} : { priority: issue.priority }),
+    ...(issue.branchName === undefined ? {} : { branchName: issue.branchName }),
+    ...(issue.prUrl === undefined ? {} : { prUrl: issue.prUrl }),
+    ...(url === undefined ? {} : { url }),
+    comments: [],
+    artifacts: [],
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt,
   };

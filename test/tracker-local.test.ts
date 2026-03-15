@@ -88,3 +88,39 @@ describe("tracker-local", () => {
     expect(loaded?.comments[11]?.body).toBe("comment 11");
   });
 });
+
+describe("tracker-local LOCAL-TEST", () => {
+  test("supports LOCAL-TEST issue workflow", async () => {
+    const trackerDir = await mkdtemp(join(tmpdir(), "piphony-tracker-local-test-"));
+    await resetTrackerState({ trackerDir });
+    const adapter = createLocalTrackerAdapter(trackerDir);
+    
+    // Create LOCAL-TEST issue
+    const issue = await adapter.store.createIssue({ 
+      identifier: "LOCAL-TEST", 
+      title: "Test issue", 
+      state: "todo" 
+    });
+    expect(issue.identifier).toBe("LOCAL-TEST");
+    expect(issue.state).toBe("todo");
+    
+    // Transition to in_progress
+    await adapter.applyMutation(issue.identifier, { type: "transition", state: "in_progress" });
+    
+    // Add comment
+    await adapter.appendComment(issue.identifier, { body: "Test comment", author: "tester" });
+    
+    // Add artifact
+    const artifactPath = join(trackerDir, "test-artifact.txt");
+    await writeFile(artifactPath, "test artifact content\n", "utf8");
+    await adapter.attachArtifact(issue.identifier, { name: "test-artifact.txt", path: artifactPath });
+    
+    // Verify final state
+    const inspected = await adapter.inspectIssue(issue.identifier);
+    expect(inspected.state).toBe("in_progress");
+    expect(inspected.comments).toHaveLength(1);
+    expect(inspected.comments[0]?.body).toBe("Test comment");
+    expect(inspected.artifacts).toHaveLength(1);
+    expect(inspected.artifacts[0]?.name).toBe("test-artifact.txt");
+  });
+});
