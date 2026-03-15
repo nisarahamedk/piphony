@@ -19,13 +19,10 @@ import { inspectRun } from "../observability/index.js";
 import { createPiSessionController } from "../pi/runner.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
+import { repoRoot } from "./_common.js";
 
 const execFileAsync = promisify(execFile);
-const webUrl = "http://127.0.0.1:3333";
-const cosPort = 6521;
-const cosEndpoint = `http://127.0.0.1:${cosPort}/api/rivet`;
-const artifactsDir = join(repoRoot, ".piphony", "artifacts", "extension-web-smoke");
 const issueIdentifier = "LOCAL-980";
 const issueContextToken = "ISSUE-CONTEXT:";
 const steerToken = "EXTENSION-STEER-OK";
@@ -35,11 +32,14 @@ const cosUserKey = `extension-web-smoke-${Date.now()}`;
 class ExtensionSteerableWorker implements RunWorker {
   readonly name = "extension-steerable-worker";
 
-  constructor(private readonly tracker: ReturnType<typeof createLocalTrackerAdapter>) {}
+  constructor(
+    private readonly tracker: ReturnType<typeof createLocalTrackerAdapter>,
+    private readonly projectRoot: string,
+  ) {}
 
   async execute(context: RunWorkerContext) {
     const controller = await createPiSessionController({
-      cwd: repoRoot,
+      cwd: this.projectRoot,
       agentType: "chief_of_staff",
       modelPreference: "minimax/MiniMax-M2.5",
       thinkingLevel: "off",
@@ -104,18 +104,14 @@ async function waitForHttp(url: string, attempts = 180): Promise<void> {
   throw new Error(`service_not_ready:${url}`);
 }
 
-async function killExistingWebServer(): Promise<void> {
-  await attemptCleanup("smoke.extension_web.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
-}
-
-async function killExistingOrchestratorWatch(): Promise<void> {
-  await attemptCleanup("smoke.extension_web.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", 10_000).then(() => undefined));
-}
-
-function startWebServer() {
-  return spawn("npm", ["run", "web:dev"], {
+function startWebServer(input: { projectRoot: string; webPort: number }) {
+  return spawn("npm", ["run", "web:dev", "--", "--port", String(input.webPort)], {
     cwd: repoRoot,
-    env: process.env,
+    env: {
+      ...process.env,
+      PIPHONY_PROJECT_ROOT: input.projectRoot,
+      PIPHONY_REPO_ROOT: input.projectRoot,
+    },
     stdio: "inherit",
   });
 }
@@ -208,13 +204,20 @@ async function waitForBodyText(input: {
   throw new Error(`Timed out waiting for body text: ${input.includes}`);
 }
 
+const fixture = await createOnboardedOpenclawsseumProject();
+const { runsRootDir, trackerDir, piphonyRoot, sessionRootDir } = fixture.paths;
+const artifactsDir = join(piphonyRoot, "artifacts", "extension-web-smoke");
+const webPort = await pickAvailablePort();
+const cosPort = await pickAvailablePort();
+const webUrl = `http://127.0.0.1:${webPort}`;
+const cosEndpoint = `http://127.0.0.1:${cosPort}/api/rivet`;
+
 await resetDir(runsRootDir);
 await rm(trackerDir, { recursive: true, force: true });
 await ensureDir(trackerDir);
 await mkdir(artifactsDir, { recursive: true });
+await ensureDir(sessionRootDir);
 await resetTrackerState({ trackerDir });
-await killExistingWebServer();
-await killExistingOrchestratorWatch();
 
 const adapter = createLocalTrackerAdapter(trackerDir);
 await adapter.store.createIssue({ identifier: issueIdentifier, title: "Extension steering target", state: "todo" });
@@ -222,7 +225,7 @@ await adapter.store.createIssue({ identifier: issueIdentifier, title: "Extension
 const activeRunRegistry = new ActiveRunRegistry();
 const orchestrator = new Orchestrator({
   tracker: adapter,
-  worker: new ExtensionSteerableWorker(adapter),
+  worker: new ExtensionSteerableWorker(adapter, fixture.projectRoot),
   runsRootDir,
   activeRunRegistry,
   pollIntervalMs: 500,
@@ -239,15 +242,13 @@ const pollLoop = (async () => {
   }
 })();
 
-const sessionRootDir = join(artifactsDir, "cos-sessions");
-await ensureDir(sessionRootDir);
 const cosRegistry = createChiefOfStaffRegistry({
-  cwd: repoRoot,
+  cwd: fixture.projectRoot,
   sessionRootDir,
-  services: createLocalChiefOfStaffServices({ trackerDir, runsRootDir, activeRunRegistry }),
+  services: createLocalChiefOfStaffServices({ trackerDir, runsRootDir, activeRunRegistry, projectRoot: fixture.projectRoot }),
 });
 const cosServer = await startChiefOfStaffServer({ registry: cosRegistry, port: cosPort });
-const webServer = startWebServer();
+const webServer = startWebServer({ projectRoot: fixture.projectRoot, webPort });
 
 try {
   await waitForHttp(webUrl);
@@ -364,6 +365,7 @@ try {
   await pollLoop;
   await attemptCleanup("smoke.extension_web.cos_server.close", () => cosServer.close());
   webServer.kill("SIGTERM");
+  await attemptCleanup("smoke.extension_web.fixture.cleanup", () => fixture.cleanup());
 }
 
 process.exit(0);

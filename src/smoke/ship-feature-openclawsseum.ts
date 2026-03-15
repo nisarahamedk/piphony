@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import { Orchestrator } from "../core/orchestrator.js";
 import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
@@ -7,11 +6,12 @@ import { runPiTask } from "../pi/runner.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
 import { createRuntimeProviderFromWorkflow, loadWorkflow } from "../workflow/index.js";
-import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
+import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
 
 const execFileAsync = promisify(execFile);
-const openclawsseumRoot = join(repoRoot, "reference", "openclawsseum");
-const workflowEntry = await loadWorkflow(openclawsseumRoot);
+const fixture = await createOnboardedOpenclawsseumProject();
+const { runsRootDir, trackerDir } = fixture.paths;
+const workflowEntry = await loadWorkflow(fixture.projectRoot);
 const webUrl = "http://127.0.0.1:3010";
 const issueIdentifier = `PIPHONY-${Date.now()}`;
 const featureTitle = "Add real Terms and Privacy pages linked from the marketing footer";
@@ -54,7 +54,7 @@ const issue = await adapter.store.createIssue({
   labels: ["feature", "shipping-smoke"],
 });
 
-const runtimeProvider = createRuntimeProviderFromWorkflow(openclawsseumRoot, workflowEntry.workflow);
+const runtimeProvider = createRuntimeProviderFromWorkflow(fixture.projectRoot, workflowEntry.workflow);
 
 class FeatureShippingWorker implements RunWorker {
   readonly name = "implementation";
@@ -80,12 +80,12 @@ class FeatureShippingWorker implements RunWorker {
     ].join("\n");
 
     const result = await runPiTask({
-      cwd: openclawsseumRoot,
+      cwd: fixture.projectRoot,
       agentType: "implementation",
       tracker: adapter,
       workItem: context.workItem,
       runtimeProvider: context.runtimeProvider,
-      githubCliCwd: openclawsseumRoot,
+      githubCliCwd: fixture.projectRoot,
       modelPreference: "minimax/MiniMax-M2.5",
       thinkingLevel: "off",
       prompt,
@@ -99,11 +99,11 @@ class FeatureShippingWorker implements RunWorker {
 
     await context.logger.emit("validation.routes.start", { terms: `${webUrl}/terms`, privacy: `${webUrl}/privacy` });
     const termsHtml = await runShell(`curl -sf ${shellQuote(`${webUrl}/terms`)}`, {
-      cwd: openclawsseumRoot,
+      cwd: fixture.projectRoot,
       timeoutMs: 120_000,
     });
     const privacyHtml = await runShell(`curl -sf ${shellQuote(`${webUrl}/privacy`)}`, {
-      cwd: openclawsseumRoot,
+      cwd: fixture.projectRoot,
       timeoutMs: 120_000,
     });
     if (!termsHtml.toLowerCase().includes("terms")) {
@@ -125,36 +125,40 @@ const orchestrator = new Orchestrator({
   worker: new FeatureShippingWorker(),
   runtimeProvider,
   workflow: workflowEntry.workflow,
-  repoRoot: openclawsseumRoot,
+  repoRoot: fixture.projectRoot,
   runsRootDir,
   agentType: "implementation",
 });
 
-const result = await orchestrator.runOnce();
-const finalIssue = await adapter.inspectIssue(issue.id);
-if (finalIssue.state !== "human_review") {
-  throw new Error(`Expected issue to reach human_review, got ${finalIssue.state}`);
+try {
+  const result = await orchestrator.runOnce();
+  const finalIssue = await adapter.inspectIssue(issue.id);
+  if (finalIssue.state !== "human_review") {
+    throw new Error(`Expected issue to reach human_review, got ${finalIssue.state}`);
+  }
+  const events = await result.logger.readEvents();
+  if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "prepare")) {
+    throw new Error("Expected workflow prepare phase to complete");
+  }
+  if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "validate")) {
+    throw new Error("Expected workflow validate phase to complete");
+  }
+  const prListRaw = await runShell(`gh pr list --head ${shellQuote(issueIdentifier)} --state open --json number,url,isDraft,title`, {
+    cwd: fixture.projectRoot,
+    timeoutMs: 120_000,
+    env: { GH_FORCE_TTY: "0", CLICOLOR: "0", NO_COLOR: "1" },
+  });
+  const prs = JSON.parse(stripAnsi(prListRaw)) as Array<{ number: number; url: string; isDraft: boolean; title: string }>;
+  if (prs.length === 0) {
+    throw new Error(`No open PR found for branch ${issueIdentifier}`);
+  }
+  const pr = prs[0]!;
+  if (!pr.isDraft) {
+    throw new Error(`Expected PR to be draft, got non-draft PR: ${pr.url}`);
+  }
+  console.log(JSON.stringify({ ok: true, issue: issueIdentifier, pr }, null, 2));
+  console.log(`OPEN_PR_URL=${pr.url}`);
+  console.log(`OPEN_PR_NUMBER=${pr.number}`);
+} finally {
+  await fixture.cleanup();
 }
-const events = await result.logger.readEvents();
-if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "prepare")) {
-  throw new Error("Expected workflow prepare phase to complete");
-}
-if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "validate")) {
-  throw new Error("Expected workflow validate phase to complete");
-}
-const prListRaw = await runShell(`gh pr list --head ${shellQuote(issueIdentifier)} --state open --json number,url,isDraft,title`, {
-  cwd: openclawsseumRoot,
-  timeoutMs: 120_000,
-  env: { GH_FORCE_TTY: "0", CLICOLOR: "0", NO_COLOR: "1" },
-});
-const prs = JSON.parse(stripAnsi(prListRaw)) as Array<{ number: number; url: string; isDraft: boolean; title: string }>;
-if (prs.length === 0) {
-  throw new Error(`No open PR found for branch ${issueIdentifier}`);
-}
-const pr = prs[0]!;
-if (!pr.isDraft) {
-  throw new Error(`Expected PR to be draft, got non-draft PR: ${pr.url}`);
-}
-console.log(JSON.stringify({ ok: true, issue: issueIdentifier, pr }, null, 2));
-console.log(`OPEN_PR_URL=${pr.url}`);
-console.log(`OPEN_PR_NUMBER=${pr.number}`);

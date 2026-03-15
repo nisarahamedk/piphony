@@ -7,16 +7,19 @@ import { createPiSessionController } from "../pi/runner.js";
 import { inspectLatestRun } from "../observability/index.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { makeTempDir, repoRoot } from "./_common.js";
+import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
 
 class SessionControlWorker implements RunWorker {
   readonly name = "session-control";
 
-  constructor(private readonly tracker: ReturnType<typeof createLocalTrackerAdapter>) {}
+  constructor(
+    private readonly tracker: ReturnType<typeof createLocalTrackerAdapter>,
+    private readonly projectRoot: string,
+  ) {}
 
   async execute(context: RunWorkerContext) {
     const controller = await createPiSessionController({
-      cwd: repoRoot,
+      cwd: this.projectRoot,
       agentType: "chief_of_staff",
       modelPreference: "minimax/MiniMax-M2.5",
       thinkingLevel: "off",
@@ -63,8 +66,8 @@ class SessionControlWorker implements RunWorker {
   }
 }
 
-const trackerDir = await makeTempDir("piphony-session-control-tracker");
-const runsRootDir = await makeTempDir("piphony-session-control-runs");
+const fixture = await createOnboardedOpenclawsseumProject();
+const { trackerDir, runsRootDir } = fixture.paths;
 await resetTrackerState({ trackerDir });
 const adapter = createLocalTrackerAdapter(trackerDir);
 await adapter.store.createIssue({ identifier: "LOCAL-950", title: "Session control smoke", state: "todo" });
@@ -103,90 +106,95 @@ async function emitSkippedFailure(reason: string): Promise<never> {
     runId: latest?.runId,
     error: latest?.summary?.error,
   }, null, 2));
+  await fixture.cleanup();
   process.exit(0);
 }
 
 const activeRunRegistry = new ActiveRunRegistry();
 const orchestrator = new Orchestrator({
   tracker: adapter,
-  worker: new SessionControlWorker(adapter),
+  worker: new SessionControlWorker(adapter, fixture.projectRoot),
   runsRootDir,
   activeRunRegistry,
   pollIntervalMs: 100,
   instanceId: "session-control-smoke",
 });
 
-await orchestrator.pollOnce();
-let active = activeRunRegistry.getByIdentifier("LOCAL-950");
-for (let attempt = 0; attempt < 160 && active?.control === undefined; attempt += 1) {
-  await sleep(150);
-  active = activeRunRegistry.getByIdentifier("LOCAL-950");
-}
-if (active?.control === undefined) {
-  const latest = await safeInspectLatestRun();
-  if (latest?.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
-    await emitSkippedFailure("pi_session_unavailable");
-  }
-  throw new Error("Expected an active steerable Pi run");
-}
-
-const initial = active.control.snapshot();
-if (initial.sessionId.trim() === "") {
-  throw new Error("Expected a real Pi session id");
-}
-
 try {
-  await active.control.steer("Please include COS-STEERED in your final answer.");
-  await sleep(300);
-  await active.control.followUp("Also include FOLLOW-UP-OK in your final answer.");
-} catch (error) {
-  const latest = await safeInspectLatestRun();
-  if (latest?.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
-    await emitSkippedFailure("pi_session_ended_early");
-  }
-  throw error;
-}
-const queued = active.control.snapshot();
-if (queued.pendingMessageCount < 1) {
-  throw new Error("Expected queued steering/follow-up messages while run is active");
-}
-
-for (let attempt = 0; attempt < 240; attempt += 1) {
-  await sleep(250);
   await orchestrator.pollOnce();
+  let active = activeRunRegistry.getByIdentifier("LOCAL-950");
+  for (let attempt = 0; attempt < 160 && active?.control === undefined; attempt += 1) {
+    await sleep(150);
+    active = activeRunRegistry.getByIdentifier("LOCAL-950");
+  }
+  if (active?.control === undefined) {
+    const latest = await safeInspectLatestRun();
+    if (latest?.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
+      await emitSkippedFailure("pi_session_unavailable");
+    }
+    throw new Error("Expected an active steerable Pi run");
+  }
+
+  const initial = active.control.snapshot();
+  if (initial.sessionId.trim() === "") {
+    throw new Error("Expected a real Pi session id");
+  }
+
+  try {
+    await active.control.steer("Please include COS-STEERED in your final answer.");
+    await sleep(300);
+    await active.control.followUp("Also include FOLLOW-UP-OK in your final answer.");
+  } catch (error) {
+    const latest = await safeInspectLatestRun();
+    if (latest?.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
+      await emitSkippedFailure("pi_session_ended_early");
+    }
+    throw error;
+  }
+  const queued = active.control.snapshot();
+  if (queued.pendingMessageCount < 1) {
+    throw new Error("Expected queued steering/follow-up messages while run is active");
+  }
+
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    await sleep(250);
+    await orchestrator.pollOnce();
+    const latest = await safeInspectLatestRun();
+    if (latest?.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
+      await emitSkippedFailure("pi_session_failed");
+    }
+    if (activeRunRegistry.getByIdentifier("LOCAL-950") === undefined) {
+      break;
+    }
+  }
+
+  if (activeRunRegistry.getByIdentifier("LOCAL-950") !== undefined) {
+    throw new Error("Expected active run to complete and unregister");
+  }
+
   const latest = await safeInspectLatestRun();
-  if (latest?.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
-    await emitSkippedFailure("pi_session_failed");
+  if (latest === undefined) {
+    throw new Error("Expected latest run details");
   }
-  if (activeRunRegistry.getByIdentifier("LOCAL-950") === undefined) {
-    break;
+  if (latest.status.status !== "completed") {
+    if (latest.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
+      await emitSkippedFailure("pi_session_failed");
+    }
+    throw new Error(`Expected completed run, got ${latest.status.status}`);
   }
-}
-
-if (activeRunRegistry.getByIdentifier("LOCAL-950") !== undefined) {
-  throw new Error("Expected active run to complete and unregister");
-}
-
-const latest = await safeInspectLatestRun();
-if (latest === undefined) {
-  throw new Error("Expected latest run details");
-}
-if (latest.status.status !== "completed") {
-  if (latest.status.status === "failed" && isSkippableSessionFailure(latest.summary?.error)) {
-    await emitSkippedFailure("pi_session_failed");
+  if (!latest.events.some((event) => event.event === "run.completed")) {
+    throw new Error("Expected run.completed event");
   }
-  throw new Error(`Expected completed run, got ${latest.status.status}`);
-}
-if (!latest.events.some((event) => event.event === "run.completed")) {
-  throw new Error("Expected run.completed event");
-}
-if (initial.sessionFile === undefined) {
-  throw new Error("Expected a persisted session file for the active run");
-}
+  if (initial.sessionFile === undefined) {
+    throw new Error("Expected a persisted session file for the active run");
+  }
 
-console.log(JSON.stringify({
-  ok: true,
-  runId: latest.runId,
-  sessionId: initial.sessionId,
-  sessionFile: initial.sessionFile,
-}, null, 2));
+  console.log(JSON.stringify({
+    ok: true,
+    runId: latest.runId,
+    sessionId: initial.sessionId,
+    sessionFile: initial.sessionFile,
+  }, null, 2));
+} finally {
+  await fixture.cleanup();
+}

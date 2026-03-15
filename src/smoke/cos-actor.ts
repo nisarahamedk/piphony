@@ -10,16 +10,19 @@ import { startChiefOfStaffServer } from "../cos/server.js";
 import { createPiSessionController } from "../pi/runner.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { makeTempDir, repoRoot } from "./_common.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
 
 class SteerableWorker implements RunWorker {
   readonly name = "steerable-worker";
 
-  constructor(private readonly tracker: ReturnType<typeof createLocalTrackerAdapter>) {}
+  constructor(
+    private readonly tracker: ReturnType<typeof createLocalTrackerAdapter>,
+    private readonly projectRoot: string,
+  ) {}
 
   async execute(context: RunWorkerContext) {
     const controller = await createPiSessionController({
-      cwd: repoRoot,
+      cwd: this.projectRoot,
       agentType: "chief_of_staff",
       modelPreference: "minimax/MiniMax-M2.5",
       thinkingLevel: "off",
@@ -61,6 +64,15 @@ class SteerableWorker implements RunWorker {
 async function waitForCompletedTurn(handle: any, completedResponses: () => number, previousCount: number, minimumMessages: number): Promise<void> {
   for (let attempt = 0; attempt < 180; attempt += 1) {
     const [history, status] = await Promise.all([handle.getHistory(), handle.getStatus()]);
+    const statusMessage = typeof status?.message === "string" ? status.message : "";
+    const statusError = typeof status?.error === "string" ? status.error : "";
+    const combinedStatus = `${statusMessage}\n${statusError}`.trim();
+    if (/(usage limit|rate limit|under heavy load|temporarily unavailable|capacity|429)/i.test(combinedStatus)) {
+      throw new Error(`ChiefOfStaff provider blocked: ${combinedStatus}`);
+    }
+    if (status?.state === "error" && combinedStatus !== "") {
+      throw new Error(`ChiefOfStaff turn failed: ${combinedStatus}`);
+    }
     if (completedResponses() > previousCount && status.state !== "thinking" && Array.isArray(history) && history.length >= minimumMessages) {
       return;
     }
@@ -69,8 +81,8 @@ async function waitForCompletedTurn(handle: any, completedResponses: () => numbe
   throw new Error("Timed out waiting for ChiefOfStaff turn completion");
 }
 
-const trackerDir = await makeTempDir("piphony-cos-tracker");
-const runsRootDir = await makeTempDir("piphony-cos-runs");
+const fixture = await createOnboardedOpenclawsseumProject();
+const { trackerDir, runsRootDir, sessionRootDir } = fixture.paths;
 await resetTrackerState({ trackerDir });
 const adapter = createLocalTrackerAdapter(trackerDir);
 await adapter.store.createIssue({ identifier: "LOCAL-960", title: "Chief of Staff smoke", state: "todo" });
@@ -78,7 +90,7 @@ await adapter.store.createIssue({ identifier: "LOCAL-960", title: "Chief of Staf
 const activeRunRegistry = new ActiveRunRegistry();
 const orchestrator = new Orchestrator({
   tracker: adapter,
-  worker: new SteerableWorker(adapter),
+  worker: new SteerableWorker(adapter, fixture.projectRoot),
   runsRootDir,
   activeRunRegistry,
   pollIntervalMs: 100,
@@ -86,13 +98,13 @@ const orchestrator = new Orchestrator({
 });
 await orchestrator.pollOnce();
 
-const sessionRootDir = await makeTempDir("piphony-cos-sessions");
 const cosRegistry = createChiefOfStaffRegistry({
-  cwd: repoRoot,
+  cwd: fixture.projectRoot,
   sessionRootDir,
-  services: createLocalChiefOfStaffServices({ trackerDir, runsRootDir, activeRunRegistry }),
+  services: createLocalChiefOfStaffServices({ trackerDir, runsRootDir, activeRunRegistry, projectRoot: fixture.projectRoot }),
+  modelPreference: "minimax/MiniMax-M2.5",
 });
-const server = await startChiefOfStaffServer({ registry: cosRegistry, port: 6511 });
+const server = await startChiefOfStaffServer({ registry: cosRegistry, port: await pickAvailablePort() });
 
 try {
   const client = createClient<any>({ endpoint: server.endpoint }) as any;
@@ -117,7 +129,7 @@ try {
 
   await handle.setPageContext({ kind: "board", provider: "local", url: "http://localhost:3333/dashboard" });
   completedCount = responses.length;
-  await handle.send("prompt", { text: "Use the board overview tools to summarize what needs attention and propose a follow-up ticket." });
+  await handle.send("prompt", { text: "Use the board overview tools to summarize what needs attention across the board." });
   await waitForCompletedTurn(handle, () => responses.length, completedCount, 6);
 
   for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -135,6 +147,7 @@ try {
   console.log(JSON.stringify({ ok: true, responses: responses.length, historyLength: history.length }, null, 2));
 } finally {
   await server.close();
+  await fixture.cleanup();
 }
 
 process.exit(0);

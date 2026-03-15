@@ -9,15 +9,12 @@ import { errorMessage } from "../core/errors.js";
 import { Orchestrator, type RunWorker, type RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir, resetDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
-import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
+import { repoRoot } from "./_common.js";
 
 const execFileAsync = promisify(execFile);
-const webUrl = "http://127.0.0.1:3333";
-const artifactsDir = join(repoRoot, ".piphony", "artifacts", "web-ui-smoke");
 const createdIdentifier = "LOCAL-450";
 const createdTitle = "Pull-based workflow smoke";
-const boardShot = join(artifactsDir, "board.png");
-const runsShot = join(artifactsDir, "runs.png");
 
 class WebUiSmokeWorker implements RunWorker {
   readonly name = "implementation";
@@ -123,32 +120,34 @@ async function waitForBodyText(input: {
   throw new Error(`Timed out waiting for body text: ${input.includes.join(", ")}`);
 }
 
-async function seedUiState(): Promise<void> {
-  await resetDir(runsRootDir);
-  await rm(trackerDir, { recursive: true, force: true });
-  await ensureDir(trackerDir);
-  await mkdir(artifactsDir, { recursive: true });
+async function seedUiState(input: { runsRootDir: string; trackerDir: string; artifactsDir: string }): Promise<void> {
+  await resetDir(input.runsRootDir);
+  await rm(input.trackerDir, { recursive: true, force: true });
+  await ensureDir(input.trackerDir);
+  await mkdir(input.artifactsDir, { recursive: true });
 }
 
-async function killExistingWebServer(): Promise<void> {
-  await attemptCleanup("smoke.web_ui.kill_web_server", () => runShell("pkill -f 'vite --config apps/web/vite.config.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", { timeoutMs: 10_000 }).then(() => undefined));
-}
-
-async function killExistingOrchestrator(): Promise<void> {
-  await attemptCleanup("smoke.web_ui.kill_orchestrator", () => runShell("pkill -f 'tsx src/cli/orchestrator-watch.ts' >/dev/null 2>&1 || [ $? -eq 1 ]", { timeoutMs: 10_000 }).then(() => undefined));
-}
-
-function startWebServer() {
-  return spawn("npm", ["run", "web:dev"], {
+function startWebServer(input: { projectRoot: string; webPort: number }) {
+  return spawn("npm", ["run", "web:dev", "--", "--port", String(input.webPort)], {
     cwd: repoRoot,
-    env: process.env,
+    env: {
+      ...process.env,
+      PIPHONY_PROJECT_ROOT: input.projectRoot,
+      PIPHONY_REPO_ROOT: input.projectRoot,
+    },
     stdio: "inherit",
   });
 }
 
-await seedUiState();
-await killExistingWebServer();
-await killExistingOrchestrator();
+const fixture = await createOnboardedOpenclawsseumProject();
+const { trackerDir, runsRootDir, piphonyRoot } = fixture.paths;
+const artifactsDir = join(piphonyRoot, "artifacts", "web-ui-smoke");
+const boardShot = join(artifactsDir, "board.png");
+const runsShot = join(artifactsDir, "runs.png");
+const webPort = await pickAvailablePort();
+const webUrl = `http://127.0.0.1:${webPort}`;
+
+await seedUiState({ runsRootDir, trackerDir, artifactsDir });
 
 const adapter = createLocalTrackerAdapter(trackerDir);
 const orchestrator = new Orchestrator({
@@ -169,7 +168,7 @@ const pollLoop = (async () => {
   }
 })();
 
-const server = startWebServer();
+const server = startWebServer({ projectRoot: fixture.projectRoot, webPort });
 
 try {
   await waitForHttp(webUrl);
@@ -246,4 +245,5 @@ try {
   stopPolling = true;
   await pollLoop;
   server.kill("SIGTERM");
+  await attemptCleanup("smoke.web_ui.fixture.cleanup", () => fixture.cleanup());
 }

@@ -3,8 +3,10 @@ import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
 import { runPiTask } from "../pi/runner.js";
-import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
+import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
 
+const fixture = await createOnboardedOpenclawsseumProject();
+const { runsRootDir, trackerDir } = fixture.paths;
 const adapter = createLocalTrackerAdapter(trackerDir);
 
 class PiWorker implements RunWorker {
@@ -12,7 +14,7 @@ class PiWorker implements RunWorker {
 
   async execute(context: RunWorkerContext) {
     const result = await runPiTask({
-      cwd: repoRoot,
+      cwd: fixture.projectRoot,
       agentType: "implementation",
       tracker: adapter,
       workItem: context.workItem,
@@ -27,16 +29,20 @@ class PiWorker implements RunWorker {
   }
 }
 
-await resetTrackerState({ trackerDir });
-await adapter.store.createIssue({ identifier: "LOCAL-301", title: "Local E2E smoke", state: "todo" });
-const orchestrator = new Orchestrator({
-  tracker: adapter,
-  worker: new PiWorker(),
-  runsRootDir,
-  agentType: "implementation",
-});
-const result = await orchestrator.runOnce();
-const issue = await adapter.inspectIssue("LOCAL-301");
-if (issue.state !== "human_review") throw new Error(`Expected human_review, got ${issue.state}`);
-if (!issue.comments.some((comment) => comment.body.includes("local smoke ok"))) throw new Error("Expected smoke comment to be appended");
-console.log(JSON.stringify({ ok: true, runId: result.run.runId, issueState: issue.state, comments: issue.comments.length }, null, 2));
+try {
+  await resetTrackerState({ trackerDir });
+  await adapter.store.createIssue({ identifier: "LOCAL-301", title: "Local E2E smoke", state: "todo" });
+  const orchestrator = new Orchestrator({
+    tracker: adapter,
+    worker: new PiWorker(),
+    runsRootDir,
+    agentType: "implementation",
+  });
+  const result = await orchestrator.runOnce();
+  const issue = await adapter.inspectIssue("LOCAL-301");
+  if (issue.state !== "human_review") throw new Error(`Expected human_review, got ${issue.state}`);
+  if (!issue.comments.some((comment) => comment.body.includes("local smoke ok"))) throw new Error("Expected smoke comment to be appended");
+  console.log(JSON.stringify({ ok: true, runId: result.run.runId, issueState: issue.state, comments: issue.comments.length }, null, 2));
+} finally {
+  await fixture.cleanup();
+}

@@ -1,14 +1,14 @@
-import { join } from "node:path";
 import { Orchestrator } from "../core/orchestrator.js";
 import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { runPiTask } from "../pi/runner.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
 import { createRuntimeProviderFromWorkflow, loadWorkflow } from "../workflow/index.js";
-import { repoRoot, runsRootDir, trackerDir } from "./_common.js";
+import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
 
-const openclawsseumRoot = join(repoRoot, "reference", "openclawsseum");
-const workflowEntry = await loadWorkflow(openclawsseumRoot);
+const fixture = await createOnboardedOpenclawsseumProject();
+const { runsRootDir, trackerDir } = fixture.paths;
+const workflowEntry = await loadWorkflow(fixture.projectRoot);
 
 await resetTrackerState({ trackerDir });
 const adapter = createLocalTrackerAdapter(trackerDir);
@@ -18,7 +18,7 @@ await adapter.store.createIssue({
   state: "todo",
 });
 
-const runtimeProvider = createRuntimeProviderFromWorkflow(openclawsseumRoot, workflowEntry.workflow);
+const runtimeProvider = createRuntimeProviderFromWorkflow(fixture.projectRoot, workflowEntry.workflow);
 
 class DockerOpenclawsseumWorker implements RunWorker {
   readonly name = "implementation";
@@ -29,7 +29,7 @@ class DockerOpenclawsseumWorker implements RunWorker {
     }
 
     const result = await runPiTask({
-      cwd: openclawsseumRoot,
+      cwd: fixture.projectRoot,
       agentType: "implementation",
       tracker: adapter,
       workItem: context.workItem,
@@ -69,27 +69,31 @@ const orchestrator = new Orchestrator({
   worker: new DockerOpenclawsseumWorker(),
   runtimeProvider,
   workflow: workflowEntry.workflow,
-  repoRoot: openclawsseumRoot,
+  repoRoot: fixture.projectRoot,
   runsRootDir,
   agentType: "implementation",
 });
 
-const result = await orchestrator.runOnce();
-const issue = await adapter.inspectIssue("LOCAL-601");
-if (issue.state !== "human_review") {
-  throw new Error(`Expected human_review, got ${issue.state}`);
+try {
+  const result = await orchestrator.runOnce();
+  const issue = await adapter.inspectIssue("LOCAL-601");
+  if (issue.state !== "human_review") {
+    throw new Error(`Expected human_review, got ${issue.state}`);
+  }
+  if (!issue.comments.some((comment) => comment.body.includes("docker smoke ok"))) {
+    throw new Error("Expected docker smoke comment");
+  }
+  const events = await result.logger.readEvents();
+  if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "prepare")) {
+    throw new Error("Expected workflow prepare phase to complete");
+  }
+  if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "validate")) {
+    throw new Error("Expected workflow validate phase to complete");
+  }
+  if (!events.some((event) => event.event === "tracker.transition")) {
+    throw new Error("Expected tracker transition event");
+  }
+  console.log(JSON.stringify({ ok: true, runId: result.run.runId, issueState: issue.state, comments: issue.comments.length }, null, 2));
+} finally {
+  await fixture.cleanup();
 }
-if (!issue.comments.some((comment) => comment.body.includes("docker smoke ok"))) {
-  throw new Error("Expected docker smoke comment");
-}
-const events = await result.logger.readEvents();
-if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "prepare")) {
-  throw new Error("Expected workflow prepare phase to complete");
-}
-if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "validate")) {
-  throw new Error("Expected workflow validate phase to complete");
-}
-if (!events.some((event) => event.event === "tracker.transition")) {
-  throw new Error("Expected tracker transition event");
-}
-console.log(JSON.stringify({ ok: true, runId: result.run.runId, issueState: issue.state, comments: issue.comments.length }, null, 2));

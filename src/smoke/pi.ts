@@ -1,11 +1,16 @@
 import { runPiTask } from "../pi/runner.js";
-import { repoRoot } from "./_common.js";
+import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
 
-const result = await runPiTask({
-  cwd: repoRoot,
-  prompt: "Read package.json and respond with exactly one short sentence confirming the project name.",
-});
-if (!result.output.toLowerCase().includes("piphony")) {
-  throw new Error(`pi smoke did not mention piphony: ${result.output}`);
+const fixture = await createOnboardedOpenclawsseumProject();
+try {
+  const result = await runPiTask({
+    cwd: fixture.projectRoot,
+    prompt: "Read package.json and respond with exactly one short sentence confirming the project name.",
+  });
+  if (!result.output.toLowerCase().includes("openclawsseum")) {
+    throw new Error(`pi smoke did not mention openclawsseum: ${result.output}`);
+  }
+  console.log(JSON.stringify({ ok: true, usedModel: result.usedModel, output: result.output }, null, 2));
+} finally {
+  await fixture.cleanup();
 }
-console.log(JSON.stringify({ ok: true, usedModel: result.usedModel, output: result.output }, null, 2));
