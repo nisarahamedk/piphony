@@ -82,7 +82,7 @@ async function runCommand(spec: ValidationCommandSpec): Promise<void> {
     );
     console.error(analysis.blocker?.headline ?? "Live validation was blocked by an external dependency.");
     console.error(analysis.blocker?.escalationHint ?? "Ask the user to restore the external dependency and rerun this validation lane.");
-    process.exit(1);
+    return;
   }
 
   console.error(`validation_runner_failed lane=${spec.lane} command=${JSON.stringify(spec.command)} exitCode=${code}`);

@@ -14,13 +14,17 @@ describe("project onboarding", () => {
     await mkdir(join(projectRoot, "infra"), { recursive: true });
     await mkdir(join(projectRoot, "scripts", "piphony"), { recursive: true });
     await writeFile(join(projectRoot, "infra", "docker-compose.local.yml"), "services: {}\n", "utf8");
-    await writeFile(join(projectRoot, "scripts", "piphony", "prepare.sh"), "#!/usr/bin/env bash\n", "utf8");
-    await writeFile(join(projectRoot, "scripts", "piphony", "validate.sh"), "#!/usr/bin/env bash\n", "utf8");
+    await writeFile(join(projectRoot, "scripts", "piphony", "stack-prepare.sh"), "#!/usr/bin/env bash\n", "utf8");
+    await writeFile(join(projectRoot, "scripts", "piphony", "teardown.sh"), "#!/usr/bin/env bash\n", "utf8");
 
     const defaults = detectProjectOnboardingDefaults(projectRoot);
-    expect(defaults.runtime.composeFile).toBe("infra/docker-compose.local.yml");
-    expect(defaults.phases.prepare?.command).toBe("bash scripts/piphony/prepare.sh");
-    expect(defaults.phases.validate?.command).toBe("bash scripts/piphony/validate.sh");
+    expect(defaults.execution.kind).toBe("docker_compose");
+    if (defaults.execution.kind !== "docker_compose") {
+      throw new Error("expected docker_compose defaults");
+    }
+    expect(defaults.execution.composeFile).toBe("infra/docker-compose.local.yml");
+    expect(defaults.lifecycle.prepare?.command).toBe("bash scripts/piphony/stack-prepare.sh");
+    expect(defaults.lifecycle.teardown?.command).toBe("bash scripts/piphony/teardown.sh");
 
     const result = await onboardProject({
       projectRoot,
@@ -28,8 +32,8 @@ describe("project onboarding", () => {
       trackerProjectKey: "APP",
       trackerBoardId: "42",
       model: "minimax/MiniMax-M2.5",
-      runtime: defaults.runtime,
-      phases: defaults.phases,
+      execution: defaults.execution,
+      lifecycle: defaults.lifecycle,
     });
 
     const workflow = readWorkflowSync(projectRoot);

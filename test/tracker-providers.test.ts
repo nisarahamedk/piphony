@@ -242,14 +242,10 @@ async function createWorkflowProject(trackerProvider: "local" | "linear" | "jira
       provider: trackerProvider,
       ...(projectKey === undefined ? {} : { projectKey }),
     },
-    runtime: {
-      provider: "docker_compose",
-      composeFile: "docker-compose.yml",
-      projectName: "tracker-runtime-test",
-      service: "runtime",
-      build: false,
+    execution: {
+      kind: "host",
+      workdir: projectRoot,
     },
-    phases: {},
   }, null, 2)}\n`, "utf8");
   return projectRoot;
 }

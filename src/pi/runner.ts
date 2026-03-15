@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import type { TrackerAdapter, RuntimeProvider, WorkItem } from "../core/types.js";
+import type { ExecutionTarget, TrackerAdapter, WorkItem } from "../core/types.js";
 import type { ThinkingLevel } from "./agent-types.js";
 import type { GitHubCliEvent } from "./github-cli.js";
 import type { TrackerToolEvent } from "./tracker-tools.js";

@@ -52,6 +52,22 @@ describe("validation gate classification", () => {
     expect(blocker?.code).toBe("provider_auth_blocked");
   });
 
+  it("detects docker daemon blockers from runtime smoke output", () => {
+    const blocker = detectExternalDependencyBlocker(
+      "Cannot connect to the Docker daemon at unix:///Users/example/.docker/run/docker.sock. Is the docker daemon running?",
+    );
+
+    expect(blocker?.code).toBe("docker_unavailable");
+  });
+
+  it("detects unavailable pinned model blockers from live smoke output", () => {
+    const blocker = detectExternalDependencyBlocker(
+      "Requested model 'minimax/MiniMax-M2.5' is not available. Available models: openai-codex/gpt-5.4",
+    );
+
+    expect(blocker?.code).toBe("provider_unavailable");
+  });
+
   it("parses trailing structured skip json from mixed logs", () => {
     const signal = parseValidationSignal([
       "some log line",

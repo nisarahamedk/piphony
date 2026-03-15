@@ -61,8 +61,11 @@ npm run smoke
 # Run the full canonical smoke suite
 npm run smoke:all
 
-# Run the real extension / full-stack smoke
+# Run the canonical final runtime-backed smoke
 npm run smoke:stack
+
+# Run the manual browser-extension control-plane smoke
+npm run smoke:extension-stack
 
 # Run validation
 npm run validate:main
@@ -108,7 +111,8 @@ npm run build:extension
 | `npm run orchestrator:watch` | Watch orchestrator mode |
 | `npm run smoke` | List canonical smoke entrypoints |
 | `npm run smoke:all` | Run the canonical smoke suite |
-| `npm run smoke:stack` | Run the canonical real-extension / full-stack smoke |
+| `npm run smoke:stack` | Run the canonical final runtime-backed OpenClawsseum smoke |
+| `npm run smoke:extension-stack` | Run the manual browser-extension control-plane smoke |
 | `npm run smoke:tracker-live:linear` | Opt-in live Linear provider validation |
 | `npm run smoke:tracker-live:jira` | Opt-in live Jira provider validation |
 | `npm run validate:main` | Run full validation suite |
@@ -123,7 +127,7 @@ Smoke tests validate runtime behavior.
 
 Canonical rule:
 - repo-touching smoke tests run against **onboarded temp fixture repos**, not the Piphony repo itself
-- `smoke:stack` is the **canonical real-extension smoke**
+- `smoke:stack` is the **canonical final runtime-backed smoke**
 
 Core smoke entrypoints:
 - `smoke:tracker-local` - Local tracker functionality
@@ -131,13 +135,15 @@ Core smoke entrypoints:
 - `smoke:pi` - Pi agent integration
 - `smoke:local-e2e` - Local end-to-end workflow
 - `smoke:web` - Web UI runtime
-- `smoke:stack` - Full dev stack + real browser extension
-- `smoke:docker` - Docker runtime provisioning
+- `smoke:stack` - Temp clone + onboard + create TODO issue + provision real OpenClawsseum runtime + run implementation agent + transition to human review + tear down (requires Docker)
 - `smoke:restart` - Service restart functionality
 - `smoke:observability` - Logging and metrics
 - `smoke:session-control` - Session management
 - `smoke:cos` - Actor system
 - `smoke:pull-based-workflow` - Pull-based workflow execution
+
+Manual control-plane / extension smoke:
+- `smoke:extension-stack` - Piphony dev stack + real browser extension against a temp repo fixture
 
 Opt-in live tracker provider checks:
 - `smoke:tracker-live:linear` - Runs only when Linear creds + team/project selection are configured

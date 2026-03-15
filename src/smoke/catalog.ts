@@ -36,10 +36,10 @@ export const smokeCommands: SmokeCommandDefinition[] = [
     includedInAll: true,
   },
   {
-    script: "smoke:docker",
+    script: "smoke:stack",
     entrypoint: "src/smoke/docker-openclawsseum.ts",
-    lane: "deterministic",
-    description: "Exercises the docker runtime provider against an onboarded temp repo fixture.",
+    lane: "live",
+    description: "Clones and onboards OpenClawsseum in a temp repo, provisions the real runtime stack, runs the implementation agent inside it, and tears it down. Requires Docker.",
     includedInAll: true,
   },
   {
@@ -85,11 +85,11 @@ export const smokeCommands: SmokeCommandDefinition[] = [
     includedInAll: true,
   },
   {
-    script: "smoke:stack",
+    script: "smoke:extension-stack",
     entrypoint: "src/smoke/stack-ui.ts",
-    lane: "live",
-    description: "Runs the full dev stack with the real browser extension against an onboarded temp repo fixture.",
-    includedInAll: true,
+    lane: "manual",
+    description: "Manual browser-extension smoke against the Piphony control-plane dev stack and a temp repo fixture.",
+    includedInAll: false,
   },
   {
     script: "smoke:tracker-live:linear",

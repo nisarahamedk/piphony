@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { createServer } from "node:net";
 import { resolveRepoPaths, type RepoPaths } from "../config/repo-paths.js";
@@ -44,6 +44,7 @@ export async function cloneReferenceProject(referenceName: string): Promise<Smok
   } catch {
     // Ignore when the reference repo does not have an origin remote.
   }
+  await overlaySourceWorkingTreeDelta(source, projectRoot);
   return {
     tempRoot,
     projectRoot,
@@ -65,6 +66,40 @@ export async function createOnboardedReferenceProject(referenceName: string, opt
   }
 }
 
+async function overlaySourceWorkingTreeDelta(sourceRoot: string, projectRoot: string): Promise<void> {
+  const modifiedPaths = await listGitPaths(sourceRoot, ["diff", "--name-only", "-z", "HEAD", "--"]);
+  const deletedPaths = await listGitPaths(sourceRoot, ["diff", "--name-only", "--diff-filter=D", "-z", "HEAD", "--"]);
+  const untrackedPaths = await listGitPaths(sourceRoot, ["ls-files", "--others", "--exclude-standard", "-z"]);
+
+  for (const relativePath of deletedPaths) {
+    await rm(join(projectRoot, relativePath), { recursive: true, force: true });
+  }
+
+  const pathsToCopy = new Set([...modifiedPaths, ...untrackedPaths]);
+  for (const relativePath of pathsToCopy) {
+    await copyPathWithMode(join(sourceRoot, relativePath), join(projectRoot, relativePath));
+  }
+}
+
+async function listGitPaths(repoPath: string, args: string[]): Promise<string[]> {
+  const { stdout } = await execFileAsync("git", ["-C", repoPath, ...args], {
+    cwd: repoRoot,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return stdout
+    .toString()
+    .split("\0")
+    .map((value) => value.trim())
+    .filter((value) => value !== "");
+}
+
+async function copyPathWithMode(sourcePath: string, targetPath: string): Promise<void> {
+  const sourceStat = await stat(sourcePath);
+  await mkdir(dirname(targetPath), { recursive: true });
+  await cp(sourcePath, targetPath, { recursive: sourceStat.isDirectory(), force: true });
+  await chmod(targetPath, sourceStat.mode);
+}
+
 export async function createOnboardedOpenclawsseumProject(options?: {
   trackerProvider?: OnboardProjectOptions["trackerProvider"];
   trackerProjectKey?: string;
@@ -81,8 +116,8 @@ export async function createOnboardedOpenclawsseumProject(options?: {
     ...(options?.trackerProjectKey === undefined ? {} : { trackerProjectKey: options.trackerProjectKey }),
     ...(options?.trackerBoardId === undefined ? {} : { trackerBoardId: options.trackerBoardId }),
     model: options?.model ?? "minimax/MiniMax-M2.5",
-    runtime: sourceWorkflow.runtime,
-    phases: sourceWorkflow.phases,
+    execution: sourceWorkflow.execution,
+    lifecycle: sourceWorkflow.lifecycle,
     force: options?.force ?? true,
   });
 }

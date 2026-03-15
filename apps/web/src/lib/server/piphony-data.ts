@@ -260,7 +260,7 @@ function serializeRunSummary(run: RunInspection | RunSummaryInspection): Dashboa
     ...(run.status.workItemIdentifier === undefined ? {} : { workItemIdentifier: run.status.workItemIdentifier }),
     ...(run.status.workItemTitle === undefined ? {} : { workItemTitle: run.status.workItemTitle }),
     agentType: run.status.agentType,
-    ...(run.status.runtimeProvider === undefined ? {} : { runtimeProvider: run.status.runtimeProvider }),
+    ...(run.status.executionTarget === undefined ? {} : { executionTarget: run.status.executionTarget }),
     status: run.status.status,
     attemptNumber: run.status.attemptNumber,
     startedAt: run.status.startedAt,

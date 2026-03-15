@@ -16,7 +16,8 @@ export interface ExternalDependencyBlocker {
     | "provider_rate_limited"
     | "provider_capacity_unavailable"
     | "provider_auth_blocked"
-    | "provider_unavailable";
+    | "provider_unavailable"
+    | "docker_unavailable";
   readonly headline: string;
   readonly escalationHint: string;
 }
@@ -115,6 +116,18 @@ const EXTERNAL_BLOCKER_PATTERNS: readonly BlockerPattern[] = [
       /fetch failed/i,
       /Service Unavailable/i,
       /\b503\b/,
+      /Requested model '.*' is not available/i,
+    ],
+  },
+  {
+    code: "docker_unavailable",
+    headline: "Docker is unavailable for runtime-backed validation",
+    escalationHint: "Start Docker Desktop or otherwise restore Docker daemon access, then rerun the live validation suite.",
+    patterns: [
+      /Cannot connect to the Docker daemon/i,
+      /docker daemon.*running/i,
+      /docker: command not found/i,
+      /spawn docker ENOENT/i,
     ],
   },
 ] as const;

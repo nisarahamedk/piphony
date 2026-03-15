@@ -10,8 +10,9 @@ Canonical repo-touching smoke pattern:
 
 Use:
 - `src/smoke/fixture-project.ts` for temp clone + onboarding
-- `src/smoke/harness.ts` for shared web/stack process startup and readiness checks
-- `npm run smoke:stack` as the canonical real-extension smoke entrypoint
+- `src/smoke/harness.ts` for shared control-plane web/stack process startup and readiness checks
+- `npm run smoke:stack` as the canonical final smoke: provision the real OpenClawsseum runtime stack in a temp onboarded repo, run the implementation agent inside it, and tear it down (requires Docker)
+- `npm run smoke:extension-stack` for manual browser-extension coverage on top of the control-plane stack
 - `npm run smoke:tracker-live:linear` / `npm run smoke:tracker-live:jira` for opt-in live external tracker checks when env is configured
 - `docs/PRODUCTION_NORTH_STAR.md` as the source-of-truth architectural rule
 

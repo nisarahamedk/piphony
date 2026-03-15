@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { createAgentModelOverrides, type AgentTypeOverride } from "../pi/agent-types.js";
 import type { SupportedTrackerProvider } from "../tracker/types.js";
-import type { WorkflowDefinition, WorkflowPhaseDefinition } from "../workflow/types.js";
+import type { WorkflowDefinition, WorkflowExecutionDefinition, WorkflowHookDefinition } from "../workflow/types.js";
 import { resolveWorkflowPath } from "../workflow/loader.js";
 
 export interface OnboardProjectOptions {
@@ -12,8 +12,8 @@ export interface OnboardProjectOptions {
   trackerProjectKey?: string;
   trackerBoardId?: string;
   model: string;
-  runtime: WorkflowDefinition["runtime"];
-  phases?: Partial<Record<"prepare" | "validate" | "teardown", WorkflowPhaseDefinition>>;
+  execution: WorkflowDefinition["execution"];
+  lifecycle?: WorkflowDefinition["lifecycle"];
   force?: boolean;
 }
 
@@ -21,8 +21,8 @@ export interface ProjectOnboardingDefaults {
   projectRoot: string;
   model: string;
   trackerProvider: SupportedTrackerProvider;
-  runtime: WorkflowDefinition["runtime"];
-  phases: Partial<Record<"prepare" | "validate" | "teardown", WorkflowPhaseDefinition>>;
+  execution: WorkflowDefinition["execution"];
+  lifecycle: NonNullable<WorkflowDefinition["lifecycle"]>;
 }
 
 export interface OnboardProjectResult {
@@ -36,23 +36,24 @@ export interface OnboardProjectResult {
 export function detectProjectOnboardingDefaults(projectRoot: string): ProjectOnboardingDefaults {
   const resolvedProjectRoot = resolve(projectRoot);
   const composeFile = detectComposeFile(resolvedProjectRoot);
-  const service = "runtime";
-  const phases = detectWorkflowPhases(resolvedProjectRoot);
-  const servicesToStart = detectServicesToStart(resolvedProjectRoot, composeFile, service);
+  const lifecycle = detectWorkflowLifecycle(resolvedProjectRoot);
   return {
     projectRoot: resolvedProjectRoot,
     model: "minimax/MiniMax-M2.5",
     trackerProvider: "local",
-    runtime: {
-      provider: "docker_compose",
-      composeFile,
-      projectName: sanitizeProjectName(basename(resolvedProjectRoot)),
-      service,
-      workdir: "/workspace",
-      build: false,
-      ...(servicesToStart === undefined ? {} : { servicesToStart }),
-    },
-    phases,
+    execution: composeFile === undefined
+      ? {
+          kind: "host",
+          workdir: resolvedProjectRoot,
+        }
+      : {
+          kind: "docker_compose",
+          composeFile,
+          projectName: sanitizeProjectName(basename(resolvedProjectRoot)),
+          service: "runtime",
+          workdir: "/workspace",
+        },
+    lifecycle,
   };
 }
 
@@ -93,20 +94,12 @@ export function buildWorkflowDefinition(options: OnboardProjectOptions): Workflo
       ...(options.trackerProjectKey === undefined ? {} : { projectKey: options.trackerProjectKey }),
       ...(options.trackerBoardId === undefined ? {} : { boardId: options.trackerBoardId }),
     },
-    runtime: {
-      ...options.runtime,
-      composeFile: options.runtime.composeFile.trim(),
-      projectName: options.runtime.projectName.trim(),
-      service: options.runtime.service.trim(),
-      ...(options.runtime.workdir === undefined ? {} : { workdir: options.runtime.workdir.trim() }),
-      ...(options.runtime.servicesToStart === undefined ? {} : { servicesToStart: [...options.runtime.servicesToStart] }),
-      ...(options.runtime.endpoints === undefined ? {} : { endpoints: { ...options.runtime.endpoints } }),
-    },
-    phases: options.phases ?? {},
+    execution: cloneExecutionDefinition(options.execution),
+    ...(options.lifecycle === undefined ? {} : { lifecycle: cloneLifecycleDefinition(options.lifecycle) }),
   };
 }
 
-function detectComposeFile(projectRoot: string): string {
+function detectComposeFile(projectRoot: string): string | undefined {
   const candidates = [
     "infra/docker-compose.local.yml",
     "infra/docker-compose.local.yaml",
@@ -115,48 +108,67 @@ function detectComposeFile(projectRoot: string): string {
     "docker-compose.yml",
     "docker-compose.yaml",
   ];
-  const found = candidates.find((candidate) => existsSync(join(projectRoot, candidate)));
-  return found ?? "docker-compose.yml";
+  return candidates.find((candidate) => existsSync(join(projectRoot, candidate)));
 }
 
-function detectWorkflowPhases(projectRoot: string): Partial<Record<"prepare" | "validate" | "teardown", WorkflowPhaseDefinition>> {
-  const phases: Partial<Record<"prepare" | "validate" | "teardown", WorkflowPhaseDefinition>> = {};
-  if (existsSync(join(projectRoot, "scripts", "piphony", "prepare.sh"))) {
-    phases.prepare = {
+function detectWorkflowLifecycle(projectRoot: string): NonNullable<WorkflowDefinition["lifecycle"]> {
+  const lifecycle: NonNullable<WorkflowDefinition["lifecycle"]> = {};
+  const prepareCommand = existsSync(join(projectRoot, "scripts", "piphony", "stack-prepare.sh"))
+    ? "bash scripts/piphony/stack-prepare.sh"
+    : existsSync(join(projectRoot, "scripts", "piphony", "prepare.sh"))
+      ? "bash scripts/piphony/prepare.sh"
+      : undefined;
+  if (prepareCommand !== undefined) {
+    lifecycle.prepare = {
       scope: "control_plane",
-      command: "bash scripts/piphony/prepare.sh",
-      timeoutSeconds: 2700,
-    };
-  }
-  if (existsSync(join(projectRoot, "scripts", "piphony", "validate.sh"))) {
-    phases.validate = {
-      scope: "control_plane",
-      command: "bash scripts/piphony/validate.sh",
-      timeoutSeconds: 2700,
-    };
-  } else if (existsSync(join(projectRoot, "scripts", "piphony", "validate-runtime.sh"))) {
-    phases.validate = {
-      scope: "runtime",
-      command: "bash scripts/piphony/validate-runtime.sh",
+      command: prepareCommand,
       timeoutSeconds: 2700,
     };
   }
   if (existsSync(join(projectRoot, "scripts", "piphony", "teardown.sh"))) {
-    phases.teardown = {
+    lifecycle.teardown = {
       scope: "control_plane",
       command: "bash scripts/piphony/teardown.sh",
       timeoutSeconds: 2700,
     };
   }
-  return phases;
+  return lifecycle;
 }
 
-function detectServicesToStart(projectRoot: string, composeFile: string, service: string): string[] | undefined {
-  const normalized = composeFile.replace(/\\/g, "/");
-  if (normalized === "infra/docker-compose.local.yml" && existsSync(join(projectRoot, composeFile))) {
-    return [service, "convex-backend", "convex-dashboard", "web"];
+function cloneExecutionDefinition(execution: WorkflowExecutionDefinition): WorkflowExecutionDefinition {
+  if (execution.kind === "host") {
+    return {
+      kind: "host",
+      ...(execution.workdir === undefined ? {} : { workdir: execution.workdir.trim() }),
+      ...(execution.endpoints === undefined ? {} : { endpoints: { ...execution.endpoints } }),
+    };
   }
-  return undefined;
+
+  return {
+    kind: "docker_compose",
+    composeFile: execution.composeFile.trim(),
+    projectName: execution.projectName.trim(),
+    service: execution.service.trim(),
+    ...(execution.workdir === undefined ? {} : { workdir: execution.workdir.trim() }),
+    ...(execution.endpoints === undefined ? {} : { endpoints: { ...execution.endpoints } }),
+  };
+}
+
+function cloneLifecycleDefinition(lifecycle: NonNullable<WorkflowDefinition["lifecycle"]>): NonNullable<WorkflowDefinition["lifecycle"]> {
+  return {
+    ...(lifecycle.prepare === undefined ? {} : { prepare: cloneHookDefinition(lifecycle.prepare) }),
+    ...(lifecycle.teardown === undefined ? {} : { teardown: cloneHookDefinition(lifecycle.teardown) }),
+  };
+}
+
+function cloneHookDefinition(hook: WorkflowHookDefinition): WorkflowHookDefinition {
+  return {
+    scope: hook.scope,
+    command: hook.command,
+    ...(hook.timeoutSeconds === undefined ? {} : { timeoutSeconds: hook.timeoutSeconds }),
+    ...(hook.service === undefined ? {} : { service: hook.service }),
+    ...(hook.env === undefined ? {} : { env: { ...hook.env } }),
+  };
 }
 
 function sanitizeProjectName(value: string): string {

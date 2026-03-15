@@ -1,11 +1,10 @@
 import { join } from "node:path";
 import type { ActiveRunRegistry } from "./active-run-registry.js";
-import { attemptCleanup } from "./cleanup.js";
 import { errorMessage, errorStack } from "./errors.js";
 import type { RunLogger } from "../observability/logger.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
 import type { WorkflowDefinition } from "../workflow/types.js";
-import type { RunRecord, RunSummaryRecord, RunWorkerResult, RuntimeProvider, WorkItem } from "./types.js";
+import type { ExecutionTarget, RunRecord, RunSummaryRecord, RunWorkerResult, WorkItem } from "./types.js";
 import { nowIso } from "./utils.js";
 import type { RunWorker } from "./orchestrator.js";
 
@@ -14,7 +13,7 @@ export interface ExecuteOrchestratorRunOptions {
   run: RunRecord;
   logger: RunLogger;
   worker: RunWorker;
-  runtimeProvider?: RuntimeProvider;
+  executionTarget?: ExecutionTarget;
   workflow?: WorkflowDefinition;
   repoRoot?: string;
   activeRunRegistry?: ActiveRunRegistry;
@@ -22,7 +21,7 @@ export interface ExecuteOrchestratorRunOptions {
 }
 
 export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOptions): Promise<RunWorkerResult> {
-  const { workItem, run, logger, worker, runtimeProvider, workflow, repoRoot, activeRunRegistry, heartbeat } = options;
+  const { workItem, run, logger, worker, executionTarget, workflow, repoRoot, activeRunRegistry, heartbeat } = options;
 
   await logger.emit("run.created", {
     identifier: workItem.identifier,
@@ -32,37 +31,33 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
   await heartbeat?.({ phase: "created" });
 
   let workflowExecutor: WorkflowExecutor | undefined;
-  if (runtimeProvider !== undefined) {
-    await runtimeProvider.prepare({ runId: run.runId, workItem });
-    await runtimeProvider.start();
-    await runtimeProvider.waitUntilReady();
-    await logger.emit("runtime.ready", { provider: runtimeProvider.name });
-    await heartbeat?.({ phase: "runtime_ready" });
+  let thrownError: unknown;
+
+  try {
     if (workflow !== undefined) {
       if (repoRoot === undefined) {
         throw new Error("repoRoot is required when workflow is configured");
       }
+      if (executionTarget === undefined) {
+        throw new Error("executionTarget is required when workflow is configured");
+      }
       workflowExecutor = new WorkflowExecutor({
         repoRoot,
         workflow,
-        runtimeProvider,
+        executionTarget,
         logger,
       });
-      await workflowExecutor.runPhase("prepare");
+      await workflowExecutor.runHook("prepare");
       await heartbeat?.({ phase: "prepare_complete" });
     }
-  }
 
-  run.status = "running";
-  run.updatedAt = nowIso();
-  activeRunRegistry?.updateStatus(run.runId, run.status);
-  await logger.writeStatus(run);
-  await logger.emit("agent.turn.started", { worker: worker.name });
-  await heartbeat?.({ phase: "running" });
+    run.status = "running";
+    run.updatedAt = nowIso();
+    activeRunRegistry?.updateStatus(run.runId, run.status);
+    await logger.writeStatus(run);
+    await logger.emit("agent.turn.started", { worker: worker.name });
+    await heartbeat?.({ phase: "running" });
 
-  let thrownError: unknown;
-
-  try {
     const contextBase = {
       workItem,
       run,
@@ -71,11 +66,10 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
       ...(heartbeat === undefined ? {} : { heartbeat }),
       ...(activeRunRegistry === undefined ? {} : { activeRunRegistry }),
     };
-    const context = runtimeProvider === undefined
+    const context = executionTarget === undefined
       ? contextBase
-      : { ...contextBase, runtimeProvider };
+      : { ...contextBase, executionTarget };
     const result = await worker.execute(context);
-    await workflowExecutor?.runPhase("validate");
     run.status = "completed";
     run.updatedAt = nowIso();
     activeRunRegistry?.updateStatus(run.runId, run.status);
@@ -115,7 +109,7 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
   } finally {
     if (workflowExecutor !== undefined) {
       try {
-        await workflowExecutor.runPhase("teardown");
+        await workflowExecutor.runHook("teardown");
       } catch (teardownError) {
         await logger.emit("workflow.teardown.failed", {
           message: errorMessage(teardownError),
@@ -125,20 +119,6 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
           throw teardownError;
         }
       }
-    }
-    if (runtimeProvider !== undefined) {
-      await attemptCleanup(
-        "runtime.stop",
-        () => runtimeProvider.stop(),
-        (failure) => logger.emit("cleanup.failed", { ...failure }),
-        runtimeProvider.name,
-      );
-      await attemptCleanup(
-        "runtime.destroy",
-        () => runtimeProvider.destroy(),
-        (failure) => logger.emit("cleanup.failed", { ...failure }),
-        runtimeProvider.name,
-      );
     }
   }
 }

@@ -1,25 +1,36 @@
 import type { SupportedTrackerProvider } from "../tracker/types.js";
 
-export type WorkflowPhaseName = "prepare" | "validate" | "teardown";
-export type WorkflowPhaseScope = "control_plane" | "runtime";
+export type WorkflowLifecycleHookName = "prepare" | "teardown";
+export type WorkflowHookScope = "control_plane" | "execution";
 
-export interface WorkflowPhaseDefinition {
-  scope: WorkflowPhaseScope;
+export interface WorkflowHookDefinition {
+  scope: WorkflowHookScope;
   command: string;
   timeoutSeconds?: number;
   service?: string;
   env?: Record<string, string>;
 }
 
-export interface DockerComposeWorkflowRuntime {
-  provider: "docker_compose";
+export interface DockerComposeWorkflowExecution {
+  kind: "docker_compose";
   composeFile: string;
   projectName: string;
   service: string;
   workdir?: string;
-  build: boolean;
-  servicesToStart?: string[];
   endpoints?: Record<string, string>;
+}
+
+export interface HostWorkflowExecution {
+  kind: "host";
+  workdir?: string;
+  endpoints?: Record<string, string>;
+}
+
+export type WorkflowExecutionDefinition = DockerComposeWorkflowExecution | HostWorkflowExecution;
+
+export interface WorkflowLifecycleDefinition {
+  prepare?: WorkflowHookDefinition;
+  teardown?: WorkflowHookDefinition;
 }
 
 export interface WorkflowTrackerDefinition {
@@ -31,8 +42,8 @@ export interface WorkflowTrackerDefinition {
 export interface WorkflowDefinition {
   version: 1;
   tracker?: WorkflowTrackerDefinition;
-  runtime: DockerComposeWorkflowRuntime;
-  phases: Partial<Record<WorkflowPhaseName, WorkflowPhaseDefinition>>;
+  execution: WorkflowExecutionDefinition;
+  lifecycle?: WorkflowLifecycleDefinition;
 }
 
 export interface WorkflowLoadResult {

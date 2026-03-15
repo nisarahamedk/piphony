@@ -5,7 +5,7 @@ import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { runPiTask } from "../pi/runner.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { createRuntimeProviderFromWorkflow, loadWorkflow } from "../workflow/index.js";
+import { createExecutionTargetFromWorkflow, loadWorkflow } from "../workflow/index.js";
 import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
 
 const execFileAsync = promisify(execFile);
@@ -22,7 +22,7 @@ const featureDescription = [
   "- /terms route exists with meaningful Openclawsseum-specific terms content.",
   "- /privacy route exists with meaningful Openclawsseum-specific privacy content.",
   "- Pages use the existing marketing shell and match current content style.",
-  "- Validate with the repo-owned piphony workflow plus direct route checks for /terms and /privacy.",
+  "- Validate directly with route checks for /terms and /privacy.",
   "- Create or update a draft PR on GitHub for this branch.",
 ].join("\n");
 
@@ -54,14 +54,14 @@ const issue = await adapter.store.createIssue({
   labels: ["feature", "shipping-smoke"],
 });
 
-const runtimeProvider = createRuntimeProviderFromWorkflow(fixture.projectRoot, workflowEntry.workflow);
+const executionTarget = createExecutionTargetFromWorkflow(fixture.projectRoot, workflowEntry.workflow);
 
 class FeatureShippingWorker implements RunWorker {
   readonly name = "implementation";
 
   async execute(context: RunWorkerContext) {
-    if (context.runtimeProvider === undefined) {
-      throw new Error("runtime provider required");
+    if (context.executionTarget === undefined) {
+      throw new Error("execution target required");
     }
     const prompt = [
       `Finish issue ${context.workItem.identifier}: ${context.workItem.title}`,
@@ -69,10 +69,10 @@ class FeatureShippingWorker implements RunWorker {
       `Use github_cli right away to create or reuse branch ${context.workItem.identifier} from the current working tree.`,
       `Use github_cli (not bash) for git/gh housekeeping: branch, status, commit, push, and draft PR create/update.`,
       `For github_cli, set driver='git' or driver='gh' and pass only the remaining arguments in args.`,
-      `Use bash only for runtime code edits and runtime sanity checks in the target environment.`,
+      `Use bash only for code edits and sanity checks in the declared execution target.`,
       `Complete this feature: footer Terms/Privacy links + real /terms and /privacy pages using the marketing shell.`,
       `Likely files: apps/web/src/features/marketing/marketing-shell.tsx and apps/web/src/routes plus apps/web/src/features/marketing pages.`,
-      `Validate in runtime with curl -sf http://web:3010/terms and curl -sf http://web:3010/privacy.`,
+      `Validate in the execution target with curl -sf http://web:3010/terms and curl -sf http://web:3010/privacy.`,
       `Then use github_cli to commit, push, and open/update a draft PR.`,
       `If the issue is still in todo or rework, transition it to in_progress before the final handoff.`,
       `Then append a tracker comment with the PR URL and transition the issue to human_review.`,
@@ -84,7 +84,7 @@ class FeatureShippingWorker implements RunWorker {
       agentType: "implementation",
       tracker: adapter,
       workItem: context.workItem,
-      runtimeProvider: context.runtimeProvider,
+      executionTarget: context.executionTarget,
       githubCliCwd: fixture.projectRoot,
       modelPreference: "minimax/MiniMax-M2.5",
       thinkingLevel: "off",
@@ -123,7 +123,7 @@ class FeatureShippingWorker implements RunWorker {
 const orchestrator = new Orchestrator({
   tracker: adapter,
   worker: new FeatureShippingWorker(),
-  runtimeProvider,
+  executionTarget,
   workflow: workflowEntry.workflow,
   repoRoot: fixture.projectRoot,
   runsRootDir,
@@ -137,11 +137,11 @@ try {
     throw new Error(`Expected issue to reach human_review, got ${finalIssue.state}`);
   }
   const events = await result.logger.readEvents();
-  if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "prepare")) {
-    throw new Error("Expected workflow prepare phase to complete");
+  if (!events.some((event) => event.event === "workflow.hook.completed" && event.data?.hook === "prepare")) {
+    throw new Error("Expected workflow prepare hook to complete");
   }
-  if (!events.some((event) => event.event === "workflow.phase.completed" && event.data?.phase === "validate")) {
-    throw new Error("Expected workflow validate phase to complete");
+  if (!events.some((event) => event.event === "workflow.hook.completed" && event.data?.hook === "teardown")) {
+    throw new Error("Expected workflow teardown hook to complete");
   }
   const prListRaw = await runShell(`gh pr list --head ${shellQuote(issueIdentifier)} --state open --json number,url,isDraft,title`, {
     cwd: fixture.projectRoot,

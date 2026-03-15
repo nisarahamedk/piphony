@@ -9,7 +9,7 @@ export interface DashboardRunSummary {
   workItemIdentifier?: string;
   workItemTitle?: string;
   agentType: string;
-  runtimeProvider?: string;
+  executionTarget?: string;
   status: "created" | "running" | "completed" | "failed" | "idle";
   attemptNumber: number;
   startedAt: string;

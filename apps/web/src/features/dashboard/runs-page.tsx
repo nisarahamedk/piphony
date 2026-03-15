@@ -230,10 +230,10 @@ function RunInspector(props: {
             <span className="run-detail-label">Updated</span>
             <strong>{formatTimestamp(run.updatedAt)}</strong>
           </div>
-          {run.runtimeProvider && (
+          {run.executionTarget && (
             <div className="run-detail-field">
-              <span className="run-detail-label">Provider</span>
-              <strong>{run.runtimeProvider}</strong>
+              <span className="run-detail-label">Execution</span>
+              <strong>{run.executionTarget}</strong>
             </div>
           )}
         </div>

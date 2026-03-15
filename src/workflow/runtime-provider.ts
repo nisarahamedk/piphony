@@ -1,20 +1,24 @@
-import { join, resolve } from "node:path";
-import type { RuntimeProvider } from "../core/types.js";
-import { DockerComposeRuntimeProvider } from "../runtime/docker/provider.js";
+import { resolve } from "node:path";
+import type { ExecutionTarget } from "../core/types.js";
+import { DockerComposeExecutionTarget } from "../runtime/docker/provider.js";
+import { HostExecutionTarget } from "../runtime/host/provider.js";
 import type { WorkflowDefinition } from "./types.js";
 
-export function createRuntimeProviderFromWorkflow(repoRoot: string, workflow: WorkflowDefinition): RuntimeProvider {
-  if (workflow.runtime.provider !== "docker_compose") {
-    throw new Error(`Unsupported workflow runtime provider: ${workflow.runtime.provider}`);
+export function createExecutionTargetFromWorkflow(repoRoot: string, workflow: WorkflowDefinition): ExecutionTarget {
+  if (workflow.execution.kind === "host") {
+    return new HostExecutionTarget({
+      projectDir: resolve(repoRoot),
+      ...(workflow.execution.workdir === undefined ? {} : { workdir: workflow.execution.workdir }),
+      ...(workflow.execution.endpoints === undefined ? {} : { endpoints: workflow.execution.endpoints }),
+    });
   }
-  return new DockerComposeRuntimeProvider({
+
+  return new DockerComposeExecutionTarget({
     projectDir: resolve(repoRoot),
-    composeFile: resolve(join(repoRoot, workflow.runtime.composeFile)),
-    projectName: workflow.runtime.projectName,
-    service: workflow.runtime.service,
-    build: workflow.runtime.build,
-    ...(workflow.runtime.workdir === undefined ? {} : { workdir: workflow.runtime.workdir }),
-    ...(workflow.runtime.servicesToStart === undefined ? {} : { servicesToStart: workflow.runtime.servicesToStart }),
-    ...(workflow.runtime.endpoints === undefined ? {} : { endpoints: workflow.runtime.endpoints }),
+    composeFile: resolve(repoRoot, workflow.execution.composeFile),
+    projectName: workflow.execution.projectName,
+    service: workflow.execution.service,
+    ...(workflow.execution.workdir === undefined ? {} : { workdir: workflow.execution.workdir }),
+    ...(workflow.execution.endpoints === undefined ? {} : { endpoints: workflow.execution.endpoints }),
   });
 }

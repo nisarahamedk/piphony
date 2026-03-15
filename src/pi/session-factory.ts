@@ -13,7 +13,7 @@ import {
   type ExtensionFactory,
 } from "@mariozechner/pi-coding-agent";
 import { createHash } from "node:crypto";
-import type { RuntimeProvider, TrackerAdapter, WorkItem } from "../core/types.js";
+import type { ExecutionTarget, TrackerAdapter, WorkItem } from "../core/types.js";
 import { normalizeForMatch } from "../core/utils.js";
 import type { AgentTypeDefinition, ThinkingLevel } from "./agent-types.js";
 import { resolveAgentType } from "./agent-types.js";
@@ -31,7 +31,7 @@ export interface PiSessionFactoryOptions {
   agentType?: string;
   workItem?: WorkItem;
   tracker?: TrackerAdapter;
-  runtimeProvider?: RuntimeProvider;
+  executionTarget?: ExecutionTarget;
   modelPreference?: string;
   thinkingLevel?: ThinkingLevel;
   githubCliCwd?: string;
@@ -82,7 +82,7 @@ export async function createPiSession(options: PiSessionFactoryOptions): Promise
   });
   await resourceLoader.reload();
 
-  const tools = buildBuiltinTools(options.cwd, agentType, options.runtimeProvider);
+  const tools = buildBuiltinTools(options.cwd, agentType, options.executionTarget);
   const customTools: any[] = [...(options.customTools ?? [])];
   if (options.tracker !== undefined && options.workItem !== undefined) {
     customTools.push(
@@ -128,7 +128,7 @@ export async function createPiSession(options: PiSessionFactoryOptions): Promise
     : { session, usedModel, schedulingKey, agentType };
 }
 
-function buildBuiltinTools(cwd: string, agentType: AgentTypeDefinition, runtimeProvider?: RuntimeProvider): any[] {
+function buildBuiltinTools(cwd: string, agentType: AgentTypeDefinition, executionTarget?: ExecutionTarget): any[] {
   const wanted = new Set(agentType.tools);
   const tools: any[] = [];
 
@@ -136,7 +136,7 @@ function buildBuiltinTools(cwd: string, agentType: AgentTypeDefinition, runtimeP
     tools.push(createReadTool(cwd));
   }
   if (wanted.has("bash")) {
-    const spawnHook = runtimeProvider?.createBashSpawnHook?.();
+    const spawnHook = executionTarget?.createBashSpawnHook?.();
     tools.push(spawnHook === undefined ? createBashTool(cwd) : createBashTool(cwd, { spawnHook }));
   }
   if (wanted.has("grep")) {

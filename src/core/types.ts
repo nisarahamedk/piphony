@@ -78,13 +78,13 @@ export interface TrackerAdapter {
   attachArtifact(id: string, input: { name: string; path: string }): Promise<TrackerArtifact>;
 }
 
-export interface RuntimeTarget {
+export interface ExecutionTargetHandle {
   id: string;
   service: string;
   workdir?: string;
 }
 
-export interface RuntimeExecResult {
+export interface ExecutionExecResult {
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -103,17 +103,12 @@ export interface BashSpawnHookOutput {
   env: Record<string, string | undefined>;
 }
 
-export interface RuntimeProvider {
+export interface ExecutionTarget {
   readonly name: string;
-  prepare(input: { runId: string; workItem: WorkItem }): Promise<void>;
-  start(): Promise<void>;
-  waitUntilReady(): Promise<void>;
-  selectTarget(input?: { preferredService?: string }): Promise<RuntimeTarget>;
-  execOnTarget(target: RuntimeTarget, command: string, options?: { cwd?: string; timeoutMs?: number }): Promise<RuntimeExecResult>;
+  selectTarget(input?: { preferredService?: string }): Promise<ExecutionTargetHandle>;
+  execOnTarget(target: ExecutionTargetHandle, command: string, options?: { cwd?: string; timeoutMs?: number }): Promise<ExecutionExecResult>;
   getEndpoints(): Promise<Record<string, string>>;
   collectArtifacts(destinationDir: string): Promise<string[]>;
-  stop(): Promise<void>;
-  destroy(): Promise<void>;
   createBashSpawnHook?(): (input: BashSpawnHookInput) => BashSpawnHookOutput;
 }
 
@@ -123,7 +118,7 @@ export interface RunRecord {
   workItemIdentifier?: string;
   workItemTitle?: string;
   agentType: string;
-  runtimeProvider?: string;
+  executionTarget?: string;
   status: "created" | "running" | "completed" | "failed" | "idle";
   attemptNumber: number;
   startedAt: string;

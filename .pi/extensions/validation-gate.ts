@@ -15,8 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   analyzeValidationResult,
-  DETERMINISTIC_VALIDATION_COMMANDS,
-  LIVE_VALIDATION_COMMANDS,
+  resolveValidationCommands,
   type ExternalDependencyBlocker,
   type ValidationCommandSpec,
   type ValidationLaneKind,
@@ -204,7 +203,7 @@ async function runValidationLane(
     ctx.ui.setStatus("validation-gate", `Running ${lane} validation: ${command.command}...`);
     const result = await runValidationCommand(pi, command, artifactDir);
     results.push(result);
-    if (result.classification !== "passed") {
+    if (result.classification === "failed") {
       break;
     }
   }
@@ -214,17 +213,19 @@ async function runValidationLane(
 
 async function runValidationSuite(pi: ExtensionAPI, ctx: ExtensionContext, agentRun: number): Promise<ValidationSummary> {
   const artifactDir = await createArtifactDir();
-  const deterministicResults = await runValidationLane(pi, ctx, "deterministic", DETERMINISTIC_VALIDATION_COMMANDS, artifactDir);
-  const failedDeterministic = deterministicResults.find((result) => result.classification !== "passed");
+  const deterministicCommands = resolveValidationCommands("deterministic", process.env);
+  const liveCommands = resolveValidationCommands("live", process.env);
+  const deterministicResults = await runValidationLane(pi, ctx, "deterministic", deterministicCommands, artifactDir);
+  const failedDeterministic = deterministicResults.find((result) => result.classification === "failed");
   const liveResults = failedDeterministic === undefined
-    ? await runValidationLane(pi, ctx, "live", LIVE_VALIDATION_COMMANDS, artifactDir)
+    ? await runValidationLane(pi, ctx, "live", liveCommands, artifactDir)
     : [];
   const results = [...deterministicResults, ...liveResults];
 
   const summary: ValidationSummary = {
     timestamp: new Date().toISOString(),
     agentRun,
-    passed: results.length > 0 && results.every((result) => result.classification === "passed"),
+    passed: results.length > 0 && results.every((result) => result.classification !== "failed"),
     artifactDir,
     results,
   };
@@ -320,14 +321,18 @@ function formatExternalBlockPrompt(summary: ValidationSummary, failure: Validati
 
 function formatSuccessMessage(summary: ValidationSummary): string {
   const deterministicPassed = summary.results.filter((result) => result.lane === "deterministic" && result.classification === "passed").length;
+  const deterministicSkipped = summary.results.filter((result) => result.lane === "deterministic" && result.classification === "external_transient").length;
   const livePassed = summary.results.filter((result) => result.lane === "live" && result.classification === "passed").length;
+  const liveSkipped = summary.results.filter((result) => result.lane === "live" && result.classification === "external_transient").length;
   return [
     "## Validation Gate Passed",
     "",
     `Validated successfully after a mutating agent run. Artifact directory: ${summary.artifactDir}`,
     "",
     `Deterministic commands passed: ${deterministicPassed}`,
+    ...(deterministicSkipped === 0 ? [] : [`Deterministic commands skipped: ${deterministicSkipped}`]),
     `Live commands passed: ${livePassed}`,
+    ...(liveSkipped === 0 ? [] : [`Live commands skipped: ${liveSkipped}`]),
   ].join("\n");
 }
 

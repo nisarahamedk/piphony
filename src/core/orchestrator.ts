@@ -9,7 +9,7 @@ import {
   type OrchestratorStatusSink,
   type RunRecord,
   type RunWorkerResult,
-  type RuntimeProvider,
+  type ExecutionTarget,
   type TrackerAdapter,
   type WorkItem,
   type WorkerHeartbeat,
@@ -23,7 +23,7 @@ export interface RunWorkerContext {
   run: RunRecord;
   logger: RunLogger;
   runArtifacts: RunArtifacts;
-  runtimeProvider?: RuntimeProvider;
+  executionTarget?: ExecutionTarget;
   workspacePath?: string;
   heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
   activeRunRegistry?: ActiveRunRegistry;
@@ -37,7 +37,7 @@ export interface RunWorker {
 export interface OrchestratorOptions {
   tracker: TrackerAdapter;
   worker: RunWorker;
-  runtimeProvider?: RuntimeProvider;
+  executionTarget?: ExecutionTarget;
   workflow?: WorkflowDefinition;
   repoRoot?: string;
   runsRootDir: string;
@@ -147,7 +147,7 @@ export class Orchestrator {
         runId,
         workItemId: "none",
         agentType: this.options.agentType ?? this.options.worker.name,
-        ...(this.options.runtimeProvider === undefined ? {} : { runtimeProvider: this.options.runtimeProvider.name }),
+        ...(this.options.executionTarget === undefined ? {} : { executionTarget: this.options.executionTarget.name }),
         status: "idle",
         attemptNumber: this.options.attemptNumber ?? 1,
         startedAt: nowIso(),
@@ -306,7 +306,7 @@ export class Orchestrator {
       workItemIdentifier: workItem.identifier,
       workItemTitle: workItem.title,
       agentType: this.options.agentType ?? this.options.worker.name,
-      ...(this.options.runtimeProvider === undefined ? {} : { runtimeProvider: this.options.runtimeProvider.name }),
+      ...(this.options.executionTarget === undefined ? {} : { executionTarget: this.options.executionTarget.name }),
       status: "created",
       attemptNumber: this.options.attemptNumber ?? 1,
       startedAt: nowIso(),
@@ -323,7 +323,7 @@ export class Orchestrator {
     return executeOrchestratorRun({
       ...input,
       worker: this.options.worker,
-      ...(this.options.runtimeProvider === undefined ? {} : { runtimeProvider: this.options.runtimeProvider }),
+      ...(this.options.executionTarget === undefined ? {} : { executionTarget: this.options.executionTarget }),
       ...(this.options.workflow === undefined ? {} : { workflow: this.options.workflow }),
       ...(this.options.repoRoot === undefined ? {} : { repoRoot: this.options.repoRoot }),
       ...(this.options.activeRunRegistry === undefined ? {} : { activeRunRegistry: this.options.activeRunRegistry }),
