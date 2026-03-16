@@ -134,6 +134,7 @@ export interface RunSummaryRecord {
   summary?: string;
   error?: string;
   transcriptPath?: string;
+  sessionFile?: string;
   usedModel?: string;
 }
 

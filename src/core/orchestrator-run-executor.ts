@@ -79,13 +79,19 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
       await logger.writeTranscript(result.output);
     }
     await logger.emit("run.completed", { summary: result.summary });
-    await logger.writeSummary(buildRunSummaryRecord({
+    // Derive sessionFile from canonical active run registry artifacts (set via attachControl)
+    const sessionFile = activeRunRegistry?.getByRunId(run.runId)?.artifacts.sessionFile;
+    const summaryRecord: Parameters<typeof buildRunSummaryRecord>[0] = {
       run,
       workItem,
       summary: result.summary,
       transcriptPath: join(logger.artifacts.runDir, "transcript.md"),
       ...(typeof result.metadata?.usedModel === "string" ? { usedModel: result.metadata.usedModel } : {}),
-    }));
+    };
+    if (sessionFile !== undefined) {
+      summaryRecord.sessionFile = sessionFile;
+    }
+    await logger.writeSummary(buildRunSummaryRecord(summaryRecord));
     await heartbeat?.({ phase: "completed", summary: result.summary });
     return result;
   } catch (error) {
@@ -99,11 +105,17 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
       message: errorMessage(error),
       stack: errorStack(error),
     });
-    await logger.writeSummary(buildRunSummaryRecord({
+    // Derive sessionFile from canonical active run registry artifacts (set via attachControl)
+    const sessionFile = activeRunRegistry?.getByRunId(run.runId)?.artifacts.sessionFile;
+    const failedSummary: Parameters<typeof buildRunSummaryRecord>[0] = {
       run,
       workItem,
       error: errorMessage(error),
-    }));
+    };
+    if (sessionFile !== undefined) {
+      failedSummary.sessionFile = sessionFile;
+    }
+    await logger.writeSummary(buildRunSummaryRecord(failedSummary));
     await heartbeat?.({ phase: "failed", error: errorMessage(error) });
     throw error;
   } finally {
@@ -129,6 +141,7 @@ function buildRunSummaryRecord(input: {
   summary?: string;
   error?: string;
   transcriptPath?: string;
+  sessionFile?: string;
   usedModel?: string;
 }): RunSummaryRecord {
   return {
@@ -140,6 +153,7 @@ function buildRunSummaryRecord(input: {
     ...(input.summary === undefined ? {} : { summary: input.summary }),
     ...(input.error === undefined ? {} : { error: input.error }),
     ...(input.transcriptPath === undefined ? {} : { transcriptPath: input.transcriptPath }),
+    ...(input.sessionFile === undefined ? {} : { sessionFile: input.sessionFile }),
     ...(input.usedModel === undefined ? {} : { usedModel: input.usedModel }),
   };
 }

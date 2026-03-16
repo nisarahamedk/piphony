@@ -103,10 +103,22 @@ export interface RunEventItem {
   data?: Record<string, JsonValue>;
 }
 
+export interface SessionLogEntry {
+  timestamp: string;
+  type: string;
+  data: Record<string, JsonValue>;
+}
+
+export interface SessionLog {
+  sessionFile: string;
+  entries: SessionLogEntry[];
+}
+
 export interface RunDetail extends DashboardRunSummary {
   summaryData?: Record<string, JsonValue>;
   transcript?: string;
   events: RunEventItem[];
+  sessionLog?: SessionLog;
 }
 
 export interface CreateIssueInput {

@@ -129,6 +129,16 @@ export async function readRunDetail(runId: string): Promise<RunDetail | undefine
       ...(event.runId === undefined ? {} : { runId: event.runId }),
       ...(event.data === undefined ? {} : { data: toJsonRecord(event.data) }),
     })),
+    ...(run.sessionLog === undefined ? {} : {
+      sessionLog: {
+        sessionFile: run.sessionLog.sessionFile,
+        entries: run.sessionLog.entries.map((entry) => ({
+          timestamp: entry.timestamp,
+          type: entry.type,
+          data: toJsonRecord(entry.data),
+        })),
+      },
+    }),
   };
 }
 

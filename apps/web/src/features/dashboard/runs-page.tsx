@@ -281,6 +281,49 @@ function RunInspector(props: {
         </pre>
       </div>
 
+      {/* Agent turn log */}
+      <div className="panel" style={{ flexGrow: 1, borderBottom: "none" }} data-testid="agent-turn-log-panel">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <div className="eyebrow" data-testid="agent-turn-log-count">
+            Agent Turn Log ({detail?.sessionLog?.entries.length ?? 0})
+          </div>
+        </div>
+        {detail?.sessionLog === undefined ? (
+          <p className="support-copy" style={{ fontSize: "12px" }}>
+            No session log available.
+          </p>
+        ) : (
+          <div className="event-timeline" data-testid="agent-turn-log-entries">
+            {(detail.sessionLog.entries)
+              .slice(-30)
+              .reverse()
+              .map((entry, idx) => (
+                <div
+                  key={`${entry.timestamp}-${entry.type}-${idx}`}
+                  className="event-row"
+                  data-testid={`agent-turn-log-entry-${idx}`}
+                >
+                  <span className="event-name" data-testid={`agent-turn-log-entry-type-${idx}`}>{entry.type}</span>
+                  <span className="event-ts">
+                    {formatTimestamp(entry.timestamp)}
+                  </span>
+                  {entry.data && Object.keys(entry.data).length > 0 && (
+                    <pre className="event-data">
+                      {JSON.stringify(entry.data, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+
       {/* Event tape */}
       <div className="panel" style={{ flexGrow: 1, borderBottom: "none" }}>
         <div

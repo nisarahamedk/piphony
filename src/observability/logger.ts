@@ -11,6 +11,7 @@ export interface RunArtifacts {
   transcriptPath: string;
   transcriptMetaPath: string;
   artifactsDir: string;
+  sessionsDir: string;
 }
 
 export class RunLogger {
@@ -30,6 +31,7 @@ export class RunLogger {
       transcriptPath: join(runDir, "transcript.md"),
       transcriptMetaPath: join(runDir, "transcript.meta.json"),
       artifactsDir: join(runDir, "artifacts"),
+      sessionsDir: join(runDir, "sessions"),
     };
   }
 
