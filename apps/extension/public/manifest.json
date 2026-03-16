@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Piphony Chief of Staff",
+  "version": "0.1.0",
+  "description": "Chief of Staff side panel for local Piphony, Linear, Jira, and other supported tracker pages.",
+  "permissions": ["storage", "tabs", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Chief of Staff"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

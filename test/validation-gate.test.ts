@@ -83,6 +83,7 @@ describe("validation gate classification", () => {
     expect(baseCommands.map((command) => command.command)).toEqual([
       "npm run smoke:cos",
       "npm run smoke:stack",
+      "npm run smoke:extension-stack",
       "npm run smoke:session-control",
     ]);
 

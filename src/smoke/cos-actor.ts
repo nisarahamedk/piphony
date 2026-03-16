@@ -10,7 +10,7 @@ import { startChiefOfStaffServer } from "../cos/server.js";
 import { createPiSessionController } from "../pi/runner.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "../fixtures/project.js";
 
 class SteerableWorker implements RunWorker {
   readonly name = "steerable-worker";

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { attemptCleanup } from "../core/cleanup.js";
-import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "../fixtures/project.js";
 import { repoRoot } from "./_common.js";
 import { runSmokeShell, startSmokeDevStack, stopSmokeProcess, waitForHttp } from "./harness.js";
 const suffix = Date.now().toString().slice(-6);

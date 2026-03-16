@@ -3,7 +3,7 @@ import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
 import { runPiTask } from "../pi/runner.js";
-import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject } from "../fixtures/project.js";
 
 const fixture = await createOnboardedOpenclawsseumProject();
 const { runsRootDir, trackerDir } = fixture.paths;

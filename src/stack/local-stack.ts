@@ -7,6 +7,7 @@ import { ensureDir } from "../core/utils.js";
 import { createChiefOfStaffRegistry } from "../cos/actor.js";
 import { createLocalChiefOfStaffServices } from "../cos/local-services.js";
 import { ProviderCapacityService } from "../pi/provider-middleware.js";
+import { loadOnboardedProjectExecution } from "../project/execution.js";
 import { LocalTrackerStatusSink } from "../tracker/local/status-sink.js";
 import { LocalTrackerStore } from "../tracker/local/state.js";
 import { resolveTrackerRuntime } from "../tracker/runtime.js";
@@ -19,6 +20,8 @@ export interface LocalPiphonyStackOptions extends LocalPiphonyStackConfigInput {
 
 export interface StartedLocalPiphonyStack {
   readonly repoRoot: string;
+  readonly workflowPath: string;
+  readonly executionTarget: string;
   readonly trackerDir: string;
   readonly runsRootDir: string;
   readonly sessionRootDir: string;
@@ -36,6 +39,7 @@ export interface StartedLocalPiphonyStack {
 
 export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions = {}): Promise<StartedLocalPiphonyStack> {
   const config = resolveLocalPiphonyStackConfig(options);
+  const projectExecution = await loadOnboardedProjectExecution(config.repoRoot);
 
   await ensureDir(config.trackerDir);
   await ensureDir(config.runsRootDir);
@@ -45,7 +49,7 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
   await trackerStore.ensure();
   const trackerRuntime = resolveTrackerRuntime({
     trackerDir: config.trackerDir,
-    projectRoot: config.repoRoot,
+    projectRoot: projectExecution.projectRoot,
     env: process.env,
     trackerProvider: config.trackerProvider,
     ...(config.trackerProjectKey === undefined ? {} : { trackerProjectKey: config.trackerProjectKey }),
@@ -60,7 +64,7 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
   const providerCapacityService = new ProviderCapacityService();
   const worker = createLocalStackWorker({
     mode: config.workerMode,
-    repoRoot: config.repoRoot,
+    repoRoot: projectExecution.projectRoot,
     trackerDir: config.trackerDir,
     tracker,
     providerCapacityService,
@@ -68,6 +72,9 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
   const orchestrator = new Orchestrator({
     tracker,
     worker,
+    executionTarget: projectExecution.executionTarget,
+    workflow: projectExecution.workflow,
+    repoRoot: projectExecution.projectRoot,
     runsRootDir: config.runsRootDir,
     agentType: "implementation",
     pollIntervalMs: config.pollIntervalMs,
@@ -78,13 +85,13 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
   });
 
   const cosRegistry = createChiefOfStaffRegistry({
-    cwd: config.repoRoot,
+    cwd: projectExecution.projectRoot,
     sessionRootDir: config.sessionRootDir,
     services: createLocalChiefOfStaffServices({
       trackerDir: config.trackerDir,
       runsRootDir: config.runsRootDir,
       activeRunRegistry,
-      projectRoot: config.repoRoot,
+      projectRoot: projectExecution.projectRoot,
       trackerRegistry,
       env: process.env,
     }),
@@ -109,7 +116,9 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
   })();
 
   return {
-    repoRoot: config.repoRoot,
+    repoRoot: projectExecution.projectRoot,
+    workflowPath: projectExecution.workflowPath,
+    executionTarget: projectExecution.executionTarget.name,
     trackerDir: config.trackerDir,
     runsRootDir: config.runsRootDir,
     sessionRootDir: config.sessionRootDir,

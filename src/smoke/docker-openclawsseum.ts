@@ -2,15 +2,15 @@ import { Orchestrator } from "../core/orchestrator.js";
 import { errorMessage } from "../core/errors.js";
 import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { runPiTask } from "../pi/runner.js";
+import { loadOnboardedProjectExecution } from "../project/execution.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { createExecutionTargetFromWorkflow, loadWorkflow } from "../workflow/index.js";
-import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "../fixtures/project.js";
 
 const fixture = await createOnboardedOpenclawsseumProject();
 const { runsRootDir, trackerDir } = fixture.paths;
-const workflowEntry = await loadWorkflow(fixture.projectRoot);
-const execution = workflowEntry.workflow.execution;
+const baseProjectExecution = await loadOnboardedProjectExecution(fixture.projectRoot);
+const execution = baseProjectExecution.workflow.execution;
 const runtimeProjectName = execution.kind === "docker_compose"
   ? `${execution.projectName}-${Date.now().toString().slice(-6)}`
   : undefined;
@@ -30,15 +30,17 @@ process.env.OPENCLAWSSEUM_HOST_RUNTIME_URL = `http://127.0.0.1:${runtimePort}`;
 process.env.OPENCLAWSSEUM_HOST_CONVEX_URL = `http://127.0.0.1:${convexPort}`;
 process.env.OPENCLAWSSEUM_HOST_CONVEX_SITE_URL = `http://127.0.0.1:${convexSitePort}`;
 process.env.OPENCLAWSSEUM_HOST_CONVEX_DASHBOARD_URL = `http://127.0.0.1:${dashboardPort}`;
-const smokeWorkflow = execution.kind !== "docker_compose" || runtimeProjectName === undefined
-  ? workflowEntry.workflow
-  : {
-      ...workflowEntry.workflow,
-      execution: {
-        ...execution,
-        projectName: runtimeProjectName,
+const projectExecution = await loadOnboardedProjectExecution(fixture.projectRoot, {
+  transformWorkflow: (workflow) => execution.kind !== "docker_compose" || runtimeProjectName === undefined
+    ? workflow
+    : {
+        ...workflow,
+        execution: {
+          ...workflow.execution,
+          projectName: runtimeProjectName,
+        },
       },
-    };
+});
 
 await resetTrackerState({ trackerDir });
 const adapter = createLocalTrackerAdapter(trackerDir);
@@ -48,8 +50,6 @@ await adapter.store.createIssue({
   description: "Prepare the real OpenClawsseum stack, implement inside the declared execution target, and hand off for human review.",
   state: "todo",
 });
-
-const executionTarget = createExecutionTargetFromWorkflow(fixture.projectRoot, smokeWorkflow);
 
 class DockerOpenclawsseumWorker implements RunWorker {
   readonly name = "implementation";
@@ -98,9 +98,9 @@ class DockerOpenclawsseumWorker implements RunWorker {
 const orchestrator = new Orchestrator({
   tracker: adapter,
   worker: new DockerOpenclawsseumWorker(),
-  executionTarget,
-  workflow: smokeWorkflow,
-  repoRoot: fixture.projectRoot,
+  executionTarget: projectExecution.executionTarget,
+  workflow: projectExecution.workflow,
+  repoRoot: projectExecution.projectRoot,
   runsRootDir,
   agentType: "implementation",
 });

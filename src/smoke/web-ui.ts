@@ -7,7 +7,7 @@ import { errorMessage } from "../core/errors.js";
 import { Orchestrator, type RunWorker, type RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir, resetDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
-import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject, pickAvailablePort } from "../fixtures/project.js";
 import { startSmokeWebServer, stopSmokeProcess, waitForHttp } from "./harness.js";
 const createdIdentifier = "LOCAL-450";
 const createdTitle = "Pull-based workflow smoke";

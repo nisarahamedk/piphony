@@ -31,6 +31,7 @@ export class LocalTrackerImplementationWorker implements RunWorker {
       agentType: "implementation",
       tracker: this.tracker,
       workItem: context.workItem,
+      ...(context.executionTarget === undefined ? {} : { executionTarget: context.executionTarget }),
       ...(this.providerCapacityService === undefined ? {} : { providerCapacityService: this.providerCapacityService }),
       sessionDir: join(context.runArtifacts.runDir, "sessions"),
       onTrackerEvent: async (event) => {

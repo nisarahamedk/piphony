@@ -4,6 +4,7 @@ export * from "./git/index.js";
 export * from "./observability/index.js";
 export * from "./observability/logger.js";
 export * from "./pi/index.js";
+export * from "./project/index.js";
 export * from "./runtime/docker/index.js";
 export * from "./runtime/host/index.js";
 export * from "./tracker/index.js";

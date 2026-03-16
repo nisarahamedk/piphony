@@ -1,5 +1,5 @@
 import { runPiTask } from "../pi/runner.js";
-import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject } from "../fixtures/project.js";
 
 const fixture = await createOnboardedOpenclawsseumProject();
 try {

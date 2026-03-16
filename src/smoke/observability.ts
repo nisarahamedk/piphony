@@ -6,7 +6,7 @@ import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { ensureDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject } from "../fixtures/project.js";
 import { repoRoot } from "./_common.js";
 
 const execFileAsync = promisify(execFile);

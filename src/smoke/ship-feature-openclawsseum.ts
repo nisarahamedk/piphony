@@ -3,15 +3,15 @@ import { promisify } from "node:util";
 import { Orchestrator } from "../core/orchestrator.js";
 import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
 import { runPiTask } from "../pi/runner.js";
+import { loadOnboardedProjectExecution } from "../project/execution.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { createExecutionTargetFromWorkflow, loadWorkflow } from "../workflow/index.js";
-import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject } from "../fixtures/project.js";
 
 const execFileAsync = promisify(execFile);
 const fixture = await createOnboardedOpenclawsseumProject();
 const { runsRootDir, trackerDir } = fixture.paths;
-const workflowEntry = await loadWorkflow(fixture.projectRoot);
+const projectExecution = await loadOnboardedProjectExecution(fixture.projectRoot);
 const webUrl = "http://127.0.0.1:3010";
 const issueIdentifier = `PIPHONY-${Date.now()}`;
 const featureTitle = "Add real Terms and Privacy pages linked from the marketing footer";
@@ -53,8 +53,6 @@ const issue = await adapter.store.createIssue({
   state: "todo",
   labels: ["feature", "shipping-smoke"],
 });
-
-const executionTarget = createExecutionTargetFromWorkflow(fixture.projectRoot, workflowEntry.workflow);
 
 class FeatureShippingWorker implements RunWorker {
   readonly name = "implementation";
@@ -123,9 +121,9 @@ class FeatureShippingWorker implements RunWorker {
 const orchestrator = new Orchestrator({
   tracker: adapter,
   worker: new FeatureShippingWorker(),
-  executionTarget,
-  workflow: workflowEntry.workflow,
-  repoRoot: fixture.projectRoot,
+  executionTarget: projectExecution.executionTarget,
+  workflow: projectExecution.workflow,
+  repoRoot: projectExecution.projectRoot,
   runsRootDir,
   agentType: "implementation",
 });

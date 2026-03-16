@@ -2,7 +2,7 @@ import { Orchestrator, StubWorker } from "../core/orchestrator.js";
 import { ensureDir } from "../core/utils.js";
 import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
 import { resetTrackerState } from "../tracker/local/harness.js";
-import { createOnboardedOpenclawsseumProject } from "./fixture-project.js";
+import { createOnboardedOpenclawsseumProject } from "../fixtures/project.js";
 
 const fixture = await createOnboardedOpenclawsseumProject();
 const { runsRootDir, trackerDir } = fixture.paths;

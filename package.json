@@ -16,6 +16,7 @@
     "web:dev": "vite --config apps/web/vite.config.ts --host 0.0.0.0 --port 3333 --strictPort",
     "web:preview": "vite preview --config apps/web/vite.config.ts --host 0.0.0.0 --port 3333",
     "dev:stack": "tsx src/cli/dev-stack.ts",
+    "dev:stack:openclawsseum": "tsx src/cli/dev-stack.ts --fixture openclawsseum",
     "onboard": "tsx src/cli/onboard.ts",
     "status": "tsx src/cli/status.ts",
     "tracker:local": "tsx src/cli/tracker-local.ts",

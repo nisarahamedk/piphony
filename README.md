@@ -64,17 +64,25 @@ npm run smoke:all
 # Run the canonical final runtime-backed smoke
 npm run smoke:stack
 
-# Run the manual browser-extension control-plane smoke
+# Run the automated browser-extension control-plane smoke
 npm run smoke:extension-stack
 
 # Run validation
 npm run validate:main
 
-# Start Stack extension dev server
+# Start the dev stack for an onboarded repo in the current directory
 npm run dev:stack
+
+# Start the dev stack against a temp onboarded OpenClawsseum fixture repo
+npm run dev:stack -- --fixture openclawsseum
+# or the convenience alias
+npm run dev:stack:openclawsseum
 
 # Watch orchestrator
 npm run orchestrator:watch
+
+# For onboarded repos, orchestrated runs always execute through .piphony/workflow.json
+# (prepare -> agent execution in the declared target -> teardown)
 
 # Run local tracker CLI
 npm run tracker:local
@@ -104,7 +112,8 @@ npm run build:extension
 | `npm run typecheck` | Type check all targets |
 | `npm run web:dev` | Start web dev server |
 | `npm run web:preview` | Preview built web UI |
-| `npm run dev:stack` | Start Stack extension dev server |
+| `npm run dev:stack` | Start the dev stack against the current onboarded repo, honoring that repo's workflow/execution target; or pass `-- --fixture openclawsseum` for a temp onboarded fixture |
+| `npm run dev:stack:openclawsseum` | Start the dev stack against a temp onboarded OpenClawsseum fixture repo |
 | `npm run onboard` | Write canonical repo-local `.piphony/` project config |
 | `npm run status` | Show system status |
 | `npm run tracker:local` | Local tracker CLI |
@@ -112,7 +121,7 @@ npm run build:extension
 | `npm run smoke` | List canonical smoke entrypoints |
 | `npm run smoke:all` | Run the canonical smoke suite |
 | `npm run smoke:stack` | Run the canonical final runtime-backed OpenClawsseum smoke |
-| `npm run smoke:extension-stack` | Run the manual browser-extension control-plane smoke |
+| `npm run smoke:extension-stack` | Run the automated browser-extension + Chief of Staff control-plane smoke |
 | `npm run smoke:tracker-live:linear` | Opt-in live Linear provider validation |
 | `npm run smoke:tracker-live:jira` | Opt-in live Jira provider validation |
 | `npm run validate:main` | Run full validation suite |
@@ -142,7 +151,7 @@ Core smoke entrypoints:
 - `smoke:cos` - Actor system
 - `smoke:pull-based-workflow` - Pull-based workflow execution
 
-Manual control-plane / extension smoke:
+Live control-plane / extension smoke:
 - `smoke:extension-stack` - Piphony dev stack + real browser extension against a temp repo fixture
 
 Opt-in live tracker provider checks:

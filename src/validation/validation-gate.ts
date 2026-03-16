@@ -45,6 +45,7 @@ export const DETERMINISTIC_VALIDATION_COMMANDS: readonly ValidationCommandSpec[]
 export const LIVE_VALIDATION_COMMANDS: readonly ValidationCommandSpec[] = [
   { command: "npm run smoke:cos", lane: "live" },
   { command: "npm run smoke:stack", lane: "live" },
+  { command: "npm run smoke:extension-stack", lane: "live" },
   { command: "npm run smoke:session-control", lane: "live" },
   { command: "npm run smoke:tracker-live:linear", lane: "live", shouldRun: hasLinearTrackerLiveValidationConfig },
   { command: "npm run smoke:tracker-live:jira", lane: "live", shouldRun: hasJiraTrackerLiveValidationConfig },

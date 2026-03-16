@@ -3,17 +3,19 @@ import { attemptCleanup } from "../core/cleanup.js";
 import { errorMessage } from "../core/errors.js";
 import { Orchestrator } from "../core/orchestrator.js";
 import { parseOrchestratorWatchConfig } from "./orchestrator-watch-config.js";
+import { ProviderCapacityService } from "../pi/provider-middleware.js";
+import { loadOnboardedProjectExecution } from "../project/execution.js";
+import { createLocalStackWorker } from "../stack/local-worker-factory.js";
 import { LocalTrackerStatusSink } from "../tracker/local/status-sink.js";
 import { LocalTrackerStore } from "../tracker/local/state.js";
 import { resolveTrackerRuntime } from "../tracker/runtime.js";
-import { ProviderCapacityService } from "../pi/provider-middleware.js";
-import { createLocalStackWorker } from "../stack/local-worker-factory.js";
 
 const config = parseOrchestratorWatchConfig(process.env);
+const projectExecution = await loadOnboardedProjectExecution(config.repoRoot);
 const trackerStore = new LocalTrackerStore({ trackerDir: config.trackerDir });
 const trackerRuntime = resolveTrackerRuntime({
   trackerDir: config.trackerDir,
-  projectRoot: config.repoRoot,
+  projectRoot: projectExecution.projectRoot,
   env: process.env,
   trackerProvider: config.trackerProvider,
   ...(config.trackerProjectKey === undefined ? {} : { trackerProjectKey: config.trackerProjectKey }),
@@ -26,7 +28,7 @@ if (config.workerMode === "smoke" && tracker.provider !== "local") {
 const providerCapacityService = new ProviderCapacityService();
 const worker = createLocalStackWorker({
   mode: config.workerMode,
-  repoRoot: config.repoRoot,
+  repoRoot: projectExecution.projectRoot,
   trackerDir: config.trackerDir,
   tracker,
   providerCapacityService,
@@ -34,6 +36,9 @@ const worker = createLocalStackWorker({
 const orchestrator = new Orchestrator({
   tracker,
   worker,
+  executionTarget: projectExecution.executionTarget,
+  workflow: projectExecution.workflow,
+  repoRoot: projectExecution.projectRoot,
   runsRootDir: config.runsRootDir,
   agentType: "implementation",
   pollIntervalMs: config.pollIntervalMs,
@@ -68,7 +73,7 @@ process.on("SIGTERM", () => {
 });
 
 console.log(
-  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId}, workerMode=${config.workerMode}, trackerProvider=${config.trackerProvider}${config.trackerProjectKey === undefined ? "" : `, trackerProjectKey=${config.trackerProjectKey}`}${config.trackerBoardId === undefined ? "" : `, trackerBoardId=${config.trackerBoardId}`})`,
+  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId}, workerMode=${config.workerMode}, trackerProvider=${config.trackerProvider}, workflow=${projectExecution.workflowPath}, executionTarget=${projectExecution.executionTarget.name}${config.trackerProjectKey === undefined ? "" : `, trackerProjectKey=${config.trackerProjectKey}`}${config.trackerBoardId === undefined ? "" : `, trackerBoardId=${config.trackerBoardId}`})`,
 );
 
 for (;;) {

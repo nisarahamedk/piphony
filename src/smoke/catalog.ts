@@ -87,9 +87,9 @@ export const smokeCommands: SmokeCommandDefinition[] = [
   {
     script: "smoke:extension-stack",
     entrypoint: "src/smoke/stack-ui.ts",
-    lane: "manual",
-    description: "Manual browser-extension smoke against the Piphony control-plane dev stack and a temp repo fixture.",
-    includedInAll: false,
+    lane: "live",
+    description: "Exercises the real browser extension and Chief of Staff control-plane flow against an onboarded temp repo fixture.",
+    includedInAll: true,
   },
   {
     script: "smoke:tracker-live:linear",
