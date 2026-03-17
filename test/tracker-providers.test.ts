@@ -235,18 +235,56 @@ function makeJiraIssue(overrides: Partial<JiraIssue> = {}): JiraIssue {
 
 async function createWorkflowProject(trackerProvider: "local" | "linear" | "jira", projectKey?: string) {
   const projectRoot = await mkdtemp(join(tmpdir(), "piphony-tracker-runtime-project-"));
-  await mkdir(join(projectRoot, ".piphony"), { recursive: true });
-  await writeFile(join(projectRoot, ".piphony", "workflow.json"), `${JSON.stringify({
-    version: 1,
-    tracker: {
-      provider: trackerProvider,
-      ...(projectKey === undefined ? {} : { projectKey }),
+  await mkdir(join(projectRoot, ".piphony", "extensions"), { recursive: true });
+  await writeFile(join(projectRoot, ".piphony", "extensions", "environment.ts"), `export default function (piphony) {
+  piphony.environments.provide({
+    id: "repo/host",
+    async prepareEnv(ctx) {
+      return {
+        executionTargets: {
+          host: ctx.helpers.createHostExecutionTarget({ projectRoot: ctx.projectRoot }),
+        },
+        defaultExecutionTarget: "host",
+      };
     },
-    execution: {
-      kind: "host",
-      workdir: projectRoot,
+    async tearDownEnv() {},
+  });
+}
+`, "utf8");
+  await writeFile(join(projectRoot, ".piphony", "extensions", "tracker.ts"), trackerProvider === "local"
+    ? `export default function (piphony) {
+  piphony.trackers.provide({
+    id: "repo/local",
+    provider: "local",
+    createTracker(ctx) {
+      return ctx.helpers.createLocalTracker({ trackerDir: ctx.trackerDir });
     },
-  }, null, 2)}\n`, "utf8");
+  });
+}
+`
+    : trackerProvider === "linear"
+      ? `export default function (piphony) {
+  piphony.trackers.provide({
+    id: "repo/linear",
+    provider: "linear",
+    ${projectKey === undefined ? "" : `defaultProjectKey: ${JSON.stringify(projectKey)},`}
+    createTracker(ctx) {
+      return ctx.helpers.createLinearTracker({ env: ctx.env, fetchImpl: ctx.fetchImpl${projectKey === undefined ? "" : `, defaultTeamKey: ${JSON.stringify(projectKey)}`} });
+    },
+  });
+}
+`
+      : `export default function (piphony) {
+  piphony.trackers.provide({
+    id: "repo/jira",
+    provider: "jira",
+    ${projectKey === undefined ? "" : `defaultProjectKey: ${JSON.stringify(projectKey)},`}
+    createTracker(ctx) {
+      return ctx.helpers.createJiraTracker({ env: ctx.env, fetchImpl: ctx.fetchImpl${projectKey === undefined ? "" : `, defaultProjectKey: ${JSON.stringify(projectKey)}`} });
+    },
+  });
+}
+`, "utf8");
   return projectRoot;
 }
 
@@ -509,15 +547,14 @@ describe("tracker provider adapter contracts", () => {
 });
 
 describe("tracker runtime selection", () => {
-  test("resolves the configured workflow tracker provider as the canonical default", async () => {
+  test("resolves the extension-declared tracker provider as the canonical default", async () => {
     const projectRoot = await createWorkflowProject("linear", "ENG");
     const linear = makeFakeProvider("linear");
-    const local = makeFakeProvider("local");
 
     const runtime = resolveTrackerRuntime({
       trackerDir: join(projectRoot, ".piphony", "tracker-local"),
       projectRoot,
-      providers: { linear, local },
+      providers: { linear },
     });
 
     expect(runtime.selection).toEqual({
@@ -526,7 +563,28 @@ describe("tracker runtime selection", () => {
     });
     expect(runtime.tracker.provider).toBe("linear");
     expect(runtime.resolve().provider).toBe("linear");
-    expect(runtime.resolve("local").provider).toBe("local");
+    expect(() => runtime.resolve("local")).toThrow("Project runtime exposes tracker provider 'linear', not 'local'.");
+  });
+
+  test("applies env-based tracker overrides to the runtime selection", async () => {
+    const projectRoot = await createWorkflowProject("linear", "ENG");
+    const linear = makeFakeProvider("linear");
+    const local = makeFakeProvider("local");
+
+    const runtime = resolveTrackerRuntime({
+      trackerDir: join(projectRoot, ".piphony", "tracker-local"),
+      projectRoot,
+      env: { PIPHONY_TRACKER_PROVIDER: "local" },
+      providers: { linear, local },
+    });
+
+    expect(runtime.selection).toEqual({
+      trackerProvider: "local",
+      trackerProjectKey: "ENG",
+    });
+    expect(runtime.tracker.provider).toBe("local");
+    expect(runtime.resolve().provider).toBe("local");
+    expect(() => runtime.resolve("linear")).toThrow("Project runtime exposes tracker provider 'local', not 'linear'.");
   });
 
   test("detects opt-in live tracker validation config only when creds and project selection are present", () => {
@@ -634,7 +692,7 @@ describe("Chief of Staff tracker provider integration", () => {
     expect(linear.transitions).toEqual([{ id: "linear:LIN-123", state: "todo" }]);
   });
 
-  test("defaults omitted provider arguments to the configured workflow tracker", async () => {
+  test("defaults omitted provider arguments to the extension-declared tracker", async () => {
     const projectRoot = await createWorkflowProject("linear", "ENG");
     const trackerDir = await mkdtemp(join(tmpdir(), "piphony-provider-default-tracker-"));
     const runsRootDir = await mkdtemp(join(tmpdir(), "piphony-provider-default-runs-"));

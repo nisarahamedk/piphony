@@ -81,7 +81,7 @@ npm run dev:stack:openclawsseum
 # Watch orchestrator
 npm run orchestrator:watch
 
-# For onboarded repos, orchestrated runs always execute through .piphony/workflow.json
+# For onboarded repos, orchestrated runs always execute through repo-local .piphony/extensions/*.ts
 # (prepare -> agent execution in the declared target -> teardown)
 
 # Run local tracker CLI

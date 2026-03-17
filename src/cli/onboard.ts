@@ -2,10 +2,9 @@
 import { stdin as input, stdout as output } from "node:process";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { detectProjectOnboardingDefaults, onboardProject } from "../onboarding/project-onboarding.js";
 import { errorMessage } from "../core/errors.js";
+import { detectProjectOnboardingDefaults, onboardProject, type OnboardProjectExecutionInput } from "../onboarding/project-onboarding.js";
 import { parseSupportedTrackerProvider, type SupportedTrackerProvider } from "../tracker/types.js";
-import type { WorkflowDefinition, WorkflowExecutionDefinition, WorkflowHookDefinition } from "../workflow/types.js";
 
 interface CliFlags {
   projectRoot?: string | undefined;
@@ -13,15 +12,13 @@ interface CliFlags {
   trackerProjectKey?: string | undefined;
   trackerBoardId?: string | undefined;
   model?: string | undefined;
-  executionKind?: WorkflowExecutionDefinition["kind"] | undefined;
+  executionKind?: OnboardProjectExecutionInput["kind"] | undefined;
   composeFile?: string | undefined;
   projectName?: string | undefined;
   service?: string | undefined;
   workdir?: string | undefined;
   prepareCommand?: string | undefined;
-  prepareScope?: WorkflowHookDefinition["scope"] | undefined;
   teardownCommand?: string | undefined;
-  teardownScope?: WorkflowHookDefinition["scope"] | undefined;
   force: boolean;
   nonInteractive: boolean;
 }
@@ -42,9 +39,7 @@ function usage(): never {
     "  --service <name>",
     "  --workdir <path>",
     "  --prepare-command <command>",
-    "  --prepare-scope <control_plane|execution>",
     "  --teardown-command <command>",
-    "  --teardown-scope <control_plane|execution>",
     "  --force",
     "  --non-interactive",
   ].join("\n"));
@@ -89,14 +84,8 @@ function parseArgs(args: string[]): CliFlags {
       case "--prepare-command":
         flags.prepareCommand = requireValue(args, ++index, arg);
         break;
-      case "--prepare-scope":
-        flags.prepareScope = parseHookScope(requireValue(args, ++index, arg), arg);
-        break;
       case "--teardown-command":
         flags.teardownCommand = requireValue(args, ++index, arg);
-        break;
-      case "--teardown-scope":
-        flags.teardownScope = parseHookScope(requireValue(args, ++index, arg), arg);
         break;
       case "--force":
         flags.force = true;
@@ -123,18 +112,11 @@ function requireValue(args: string[], index: number, flag: string): string {
   return value;
 }
 
-function parseExecutionKind(raw: string, flag: string): WorkflowExecutionDefinition["kind"] {
+function parseExecutionKind(raw: string, flag: string): OnboardProjectExecutionInput["kind"] {
   if (raw === "host" || raw === "docker_compose") {
     return raw;
   }
   throw new Error(`${flag} must be one of: host, docker_compose`);
-}
-
-function parseHookScope(raw: string, flag: string): WorkflowHookDefinition["scope"] {
-  if (raw === "control_plane" || raw === "execution") {
-    return raw;
-  }
-  throw new Error(`${flag} must be one of: control_plane, execution`);
 }
 
 async function promptString(rl: ReturnType<typeof createInterface>, label: string, fallback: string): Promise<string> {
@@ -148,33 +130,48 @@ async function promptOptional(rl: ReturnType<typeof createInterface>, label: str
   return answer === "" ? fallback : answer;
 }
 
-async function promptProvider(rl: ReturnType<typeof createInterface>, fallback: SupportedTrackerProvider): Promise<SupportedTrackerProvider> {
-  return parseSupportedTrackerProvider(await promptString(rl, "Tracker provider (local|linear|jira)", fallback), fallback);
-}
-
 async function gatherInteractiveFlags(flags: CliFlags): Promise<CliFlags> {
   const projectRoot = resolve(flags.projectRoot ?? process.cwd());
   const defaults = detectProjectOnboardingDefaults(projectRoot);
   const rl = createInterface({ input, output });
   try {
     console.log(`Onboarding Piphony for ${basename(projectRoot)} at ${projectRoot}`);
-    const trackerProvider = flags.trackerProvider ?? await promptProvider(rl, defaults.trackerProvider);
+    const trackerProvider = flags.trackerProvider ?? parseSupportedTrackerProvider(
+      await promptString(rl, "Tracker provider (local|linear|jira)", defaults.trackerProvider),
+      defaults.trackerProvider,
+    );
     const trackerProjectKey = trackerProvider === "local"
       ? undefined
-      : (flags.trackerProjectKey ?? await promptOptional(rl, "Tracker project key", undefined));
+      : (flags.trackerProjectKey ?? await promptOptional(rl, "Tracker project key"));
     const trackerBoardId = trackerProvider === "jira"
-      ? (flags.trackerBoardId ?? await promptOptional(rl, "Tracker board id", undefined))
+      ? (flags.trackerBoardId ?? await promptOptional(rl, "Tracker board id"))
       : undefined;
     const model = flags.model ?? await promptString(rl, "Pinned model", defaults.model);
     const executionKind = flags.executionKind ?? parseExecutionKind(
       await promptString(rl, "Execution kind (host|docker_compose)", defaults.execution.kind),
-      "executionKind",
+      "--execution-kind",
     );
-    const workdir = flags.workdir ?? await promptOptional(rl, "Execution workdir", defaults.execution.workdir ?? projectRoot);
+    const workdir = flags.workdir ?? await promptOptional(
+      rl,
+      "Execution workdir",
+      defaults.execution.workdir ?? projectRoot,
+    );
 
     if (executionKind === "docker_compose") {
-      const composeDefaults = defaults.execution.kind === "docker_compose"
-        ? defaults.execution
+      const dockerDefaults: {
+        composeFile: string;
+        projectName: string;
+        service: string;
+        workdir?: string;
+        endpoints?: Record<string, string>;
+      } = defaults.execution.kind === "docker_compose"
+        ? {
+            composeFile: defaults.execution.composeFile!,
+            projectName: defaults.execution.projectName!,
+            service: defaults.execution.service!,
+            ...(defaults.execution.workdir === undefined ? {} : { workdir: defaults.execution.workdir }),
+            ...(defaults.execution.endpoints === undefined ? {} : { endpoints: defaults.execution.endpoints }),
+          }
         : { composeFile: "docker-compose.yml", projectName: basename(projectRoot), service: "runtime", workdir: "/workspace" };
       return {
         ...flags,
@@ -184,11 +181,16 @@ async function gatherInteractiveFlags(flags: CliFlags): Promise<CliFlags> {
         ...(trackerBoardId === undefined ? {} : { trackerBoardId }),
         model,
         executionKind,
-        composeFile: flags.composeFile ?? await promptString(rl, "Docker Compose file", composeDefaults.composeFile),
-        projectName: flags.projectName ?? await promptString(rl, "Docker project name", composeDefaults.projectName),
-        service: flags.service ?? await promptString(rl, "Primary execution service", composeDefaults.service),
+        composeFile: flags.composeFile ?? await promptString(rl, "Docker Compose file", dockerDefaults.composeFile!),
+        projectName: flags.projectName ?? await promptString(rl, "Docker project name", dockerDefaults.projectName!),
+        service: flags.service ?? await promptString(rl, "Primary execution service", dockerDefaults.service!),
         ...(workdir === undefined ? {} : { workdir }),
-        ...withLifecycleDefaults(flags, defaults.lifecycle),
+        ...(flags.prepareCommand === undefined && defaults.execution.prepareCommand === undefined
+          ? {}
+          : { prepareCommand: flags.prepareCommand ?? await promptOptional(rl, "Prepare command", defaults.execution.prepareCommand) }),
+        ...(flags.teardownCommand === undefined && defaults.execution.teardownCommand === undefined
+          ? {}
+          : { teardownCommand: flags.teardownCommand ?? await promptOptional(rl, "Teardown command", defaults.execution.teardownCommand) }),
       };
     }
 
@@ -201,76 +203,54 @@ async function gatherInteractiveFlags(flags: CliFlags): Promise<CliFlags> {
       model,
       executionKind,
       ...(workdir === undefined ? {} : { workdir }),
-      ...withLifecycleDefaults(flags, defaults.lifecycle),
+      ...(flags.prepareCommand === undefined && defaults.execution.prepareCommand === undefined
+        ? {}
+        : { prepareCommand: flags.prepareCommand ?? await promptOptional(rl, "Prepare command", defaults.execution.prepareCommand) }),
+      ...(flags.teardownCommand === undefined && defaults.execution.teardownCommand === undefined
+        ? {}
+        : { teardownCommand: flags.teardownCommand ?? await promptOptional(rl, "Teardown command", defaults.execution.teardownCommand) }),
     };
   } finally {
     rl.close();
   }
 }
 
-function withLifecycleDefaults(flags: CliFlags, lifecycle: NonNullable<WorkflowDefinition["lifecycle"]>) {
-  return {
-    ...((flags.prepareCommand ?? lifecycle.prepare?.command) === undefined
-      ? {}
-      : { prepareCommand: flags.prepareCommand ?? lifecycle.prepare?.command }),
-    ...((flags.prepareScope ?? lifecycle.prepare?.scope) === undefined
-      ? {}
-      : { prepareScope: flags.prepareScope ?? lifecycle.prepare?.scope }),
-    ...((flags.teardownCommand ?? lifecycle.teardown?.command) === undefined
-      ? {}
-      : { teardownCommand: flags.teardownCommand ?? lifecycle.teardown?.command }),
-    ...((flags.teardownScope ?? lifecycle.teardown?.scope) === undefined
-      ? {}
-      : { teardownScope: flags.teardownScope ?? lifecycle.teardown?.scope }),
-  };
-}
-
-function flagsToLifecycle(flags: CliFlags): WorkflowDefinition["lifecycle"] {
-  return {
-    ...(flags.prepareCommand === undefined ? {} : {
-      prepare: {
-        scope: flags.prepareScope ?? "control_plane",
-        command: flags.prepareCommand,
-        timeoutSeconds: 2700,
-      },
-    }),
-    ...(flags.teardownCommand === undefined ? {} : {
-      teardown: {
-        scope: flags.teardownScope ?? "control_plane",
-        command: flags.teardownCommand,
-        timeoutSeconds: 2700,
-      },
-    }),
-  };
-}
-
-function buildExecution(flags: CliFlags, defaults: ReturnType<typeof detectProjectOnboardingDefaults>): WorkflowDefinition["execution"] {
+function buildExecution(flags: CliFlags, defaults: ReturnType<typeof detectProjectOnboardingDefaults>): OnboardProjectExecutionInput {
   const kind = flags.executionKind ?? defaults.execution.kind;
   if (kind === "host") {
-    const workdir = flags.workdir ?? defaults.execution.workdir;
     return {
       kind: "host",
-      ...(workdir === undefined ? {} : { workdir }),
+      ...(flags.workdir === undefined && defaults.execution.workdir === undefined ? {} : { workdir: flags.workdir ?? defaults.execution.workdir }),
       ...(defaults.execution.endpoints === undefined ? {} : { endpoints: defaults.execution.endpoints }),
+      ...(flags.prepareCommand === undefined && defaults.execution.prepareCommand === undefined ? {} : { prepareCommand: flags.prepareCommand ?? defaults.execution.prepareCommand }),
+      ...(flags.teardownCommand === undefined && defaults.execution.teardownCommand === undefined ? {} : { teardownCommand: flags.teardownCommand ?? defaults.execution.teardownCommand }),
     };
   }
 
-  const composeDefaults: {
+  const dockerDefaults: {
     composeFile: string;
     projectName: string;
     service: string;
     workdir?: string;
     endpoints?: Record<string, string>;
   } = defaults.execution.kind === "docker_compose"
-    ? defaults.execution
+    ? {
+        composeFile: defaults.execution.composeFile!,
+        projectName: defaults.execution.projectName!,
+        service: defaults.execution.service!,
+        ...(defaults.execution.workdir === undefined ? {} : { workdir: defaults.execution.workdir }),
+        ...(defaults.execution.endpoints === undefined ? {} : { endpoints: defaults.execution.endpoints }),
+      }
     : { composeFile: "docker-compose.yml", projectName: basename(resolve(flags.projectRoot ?? process.cwd())), service: "runtime", workdir: "/workspace" };
   return {
     kind: "docker_compose",
-    composeFile: flags.composeFile ?? composeDefaults.composeFile,
-    projectName: flags.projectName ?? composeDefaults.projectName,
-    service: flags.service ?? composeDefaults.service,
-    ...(flags.workdir === undefined && composeDefaults.workdir === undefined ? {} : { workdir: flags.workdir ?? composeDefaults.workdir }),
-    ...(composeDefaults.endpoints === undefined ? {} : { endpoints: composeDefaults.endpoints }),
+    composeFile: flags.composeFile ?? dockerDefaults.composeFile!,
+    projectName: flags.projectName ?? dockerDefaults.projectName!,
+    service: flags.service ?? dockerDefaults.service!,
+    ...(flags.workdir === undefined && dockerDefaults.workdir === undefined ? {} : { workdir: flags.workdir ?? dockerDefaults.workdir }),
+    ...(dockerDefaults.endpoints === undefined ? {} : { endpoints: dockerDefaults.endpoints }),
+    ...(flags.prepareCommand === undefined && defaults.execution.prepareCommand === undefined ? {} : { prepareCommand: flags.prepareCommand ?? defaults.execution.prepareCommand }),
+    ...(flags.teardownCommand === undefined && defaults.execution.teardownCommand === undefined ? {} : { teardownCommand: flags.teardownCommand ?? defaults.execution.teardownCommand }),
   };
 }
 
@@ -281,10 +261,6 @@ async function main() {
   const defaults = detectProjectOnboardingDefaults(projectRoot);
   const trackerProvider = flags.trackerProvider ?? defaults.trackerProvider;
   const model = flags.model ?? defaults.model;
-  const lifecycle = flagsToLifecycle({
-    ...flags,
-    ...withLifecycleDefaults(flags, defaults.lifecycle),
-  });
 
   const result = await onboardProject({
     projectRoot,
@@ -293,14 +269,15 @@ async function main() {
     ...(flags.trackerBoardId === undefined ? {} : { trackerBoardId: flags.trackerBoardId }),
     model,
     execution: buildExecution(flags, defaults),
-    lifecycle,
     force: flags.force,
   });
 
   console.log(JSON.stringify({
     ok: true,
     projectRoot: result.projectRoot,
-    workflowPath: result.workflowPath,
+    extensionsDir: result.extensionsDir,
+    environmentPath: result.environmentPath,
+    trackerPath: result.trackerPath,
     agentTypesPath: result.agentTypesPath,
     trackerProvider,
     model,

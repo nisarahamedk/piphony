@@ -2,7 +2,6 @@ import { hostname } from "node:os";
 import { createRunArtifactIndex } from "../observability/artifact-index.js";
 import { RunLogger, type RunArtifacts } from "../observability/logger.js";
 import { executeOrchestratorRun } from "./orchestrator-run-executor.js";
-import type { WorkflowDefinition } from "../workflow/types.js";
 import {
   ACTIVE_WORK_ITEM_STATES,
   type OrchestratorSnapshot,
@@ -17,6 +16,7 @@ import {
 import type { ActiveRunRegistry } from "./active-run-registry.js";
 import { errorMessage } from "./errors.js";
 import { createRunId, nowIso } from "./utils.js";
+import type { ProjectExecutionContext } from "../project/execution.js";
 
 export interface RunWorkerContext {
   workItem: WorkItem;
@@ -37,9 +37,7 @@ export interface RunWorker {
 export interface OrchestratorOptions {
   tracker: TrackerAdapter;
   worker: RunWorker;
-  executionTarget?: ExecutionTarget;
-  workflow?: WorkflowDefinition;
-  repoRoot?: string;
+  projectExecution?: ProjectExecutionContext;
   runsRootDir: string;
   agentType?: string;
   attemptNumber?: number;
@@ -147,7 +145,6 @@ export class Orchestrator {
         runId,
         workItemId: "none",
         agentType: this.options.agentType ?? this.options.worker.name,
-        ...(this.options.executionTarget === undefined ? {} : { executionTarget: this.options.executionTarget.name }),
         status: "idle",
         attemptNumber: this.options.attemptNumber ?? 1,
         startedAt: nowIso(),
@@ -306,7 +303,6 @@ export class Orchestrator {
       workItemIdentifier: workItem.identifier,
       workItemTitle: workItem.title,
       agentType: this.options.agentType ?? this.options.worker.name,
-      ...(this.options.executionTarget === undefined ? {} : { executionTarget: this.options.executionTarget.name }),
       status: "created",
       attemptNumber: this.options.attemptNumber ?? 1,
       startedAt: nowIso(),
@@ -323,9 +319,7 @@ export class Orchestrator {
     return executeOrchestratorRun({
       ...input,
       worker: this.options.worker,
-      ...(this.options.executionTarget === undefined ? {} : { executionTarget: this.options.executionTarget }),
-      ...(this.options.workflow === undefined ? {} : { workflow: this.options.workflow }),
-      ...(this.options.repoRoot === undefined ? {} : { repoRoot: this.options.repoRoot }),
+      ...(this.options.projectExecution === undefined ? {} : { projectExecution: this.options.projectExecution }),
       ...(this.options.activeRunRegistry === undefined ? {} : { activeRunRegistry: this.options.activeRunRegistry }),
     });
   }

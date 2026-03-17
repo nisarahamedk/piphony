@@ -188,7 +188,7 @@ async function main() {
 
     console.log("Piphony dev stack ready");
     console.log(`Project root: ${runtime.projectRoot}`);
-    console.log(`Workflow: ${stack.workflowPath}`);
+    console.log(`Extensions: ${stack.extensionsPath}`);
     console.log(`Execution target: ${stack.executionTarget}`);
     if (runtime.fixture !== undefined) {
       console.log(`Fixture temp root: ${runtime.fixture.tempRoot}`);

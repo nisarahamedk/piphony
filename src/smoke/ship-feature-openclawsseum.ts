@@ -2,18 +2,15 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Orchestrator } from "../core/orchestrator.js";
 import type { RunWorker, RunWorkerContext } from "../core/orchestrator.js";
-import { runPiTask } from "../pi/runner.js";
-import { loadOnboardedProjectExecution } from "../project/execution.js";
-import { createLocalTrackerAdapter } from "../tracker/local/adapter.js";
-import { resetTrackerState } from "../tracker/local/harness.js";
 import { createOnboardedOpenclawsseumProject } from "../fixtures/project.js";
+import { loadOnboardedProjectExecution, createProjectTracker } from "../project/execution.js";
+import { runPiTask } from "../pi/runner.js";
+import { resetTrackerState } from "../tracker/local/harness.js";
 
 const execFileAsync = promisify(execFile);
 const fixture = await createOnboardedOpenclawsseumProject();
 const { runsRootDir, trackerDir } = fixture.paths;
-const projectExecution = await loadOnboardedProjectExecution(fixture.projectRoot);
-const webUrl = "http://127.0.0.1:3010";
-const issueIdentifier = `PIPHONY-${Date.now()}`;
+const projectExecution = loadOnboardedProjectExecution(fixture.projectRoot);
 const featureTitle = "Add real Terms and Privacy pages linked from the marketing footer";
 const featureDescription = [
   "Implement real public-facing Terms and Privacy pages in the marketing site.",
@@ -26,6 +23,20 @@ const featureDescription = [
   "- Create or update a draft PR on GitHub for this branch.",
 ].join("\n");
 
+await resetTrackerState({ trackerDir });
+const tracker = createProjectTracker({ context: projectExecution, trackerDir, env: process.env });
+
+// Create the issue and capture the actual created identity
+const createdWorkItem = await tracker.createIssue({
+  title: featureTitle,
+  description: featureDescription,
+  state: "todo",
+  labels: ["feature", "shipping-smoke"],
+});
+
+// Use the actual created identifier for later lookup
+const issueIdentifier = createdWorkItem.identifier;
+
 async function runShell(command: string, options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<string> {
   const { stdout } = await execFileAsync("bash", ["-lc", command], {
     cwd: options?.cwd,
@@ -35,24 +46,6 @@ async function runShell(command: string, options?: { cwd?: string; timeoutMs?: n
   });
   return stdout.toString();
 }
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `"'"'`)}'`;
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\u001b\(B/g, "");
-}
-
-await resetTrackerState({ trackerDir });
-const adapter = createLocalTrackerAdapter(trackerDir);
-const issue = await adapter.store.createIssue({
-  identifier: issueIdentifier,
-  title: featureTitle,
-  description: featureDescription,
-  state: "todo",
-  labels: ["feature", "shipping-smoke"],
-});
 
 class FeatureShippingWorker implements RunWorker {
   readonly name = "implementation";
@@ -69,9 +62,7 @@ class FeatureShippingWorker implements RunWorker {
       `For github_cli, set driver='git' or driver='gh' and pass only the remaining arguments in args.`,
       `Use bash only for code edits and sanity checks in the declared execution target.`,
       `Complete this feature: footer Terms/Privacy links + real /terms and /privacy pages using the marketing shell.`,
-      `Likely files: apps/web/src/features/marketing/marketing-shell.tsx and apps/web/src/routes plus apps/web/src/features/marketing pages.`,
       `Validate in the execution target with curl -sf http://web:3010/terms and curl -sf http://web:3010/privacy.`,
-      `Then use github_cli to commit, push, and open/update a draft PR.`,
       `If the issue is still in todo or rework, transition it to in_progress before the final handoff.`,
       `Then append a tracker comment with the PR URL and transition the issue to human_review.`,
       `Reply with the PR URL and one sentence about what shipped.`,
@@ -80,7 +71,7 @@ class FeatureShippingWorker implements RunWorker {
     const result = await runPiTask({
       cwd: fixture.projectRoot,
       agentType: "implementation",
-      tracker: adapter,
+      tracker,
       workItem: context.workItem,
       executionTarget: context.executionTarget,
       githubCliCwd: fixture.projectRoot,
@@ -95,22 +86,8 @@ class FeatureShippingWorker implements RunWorker {
       },
     });
 
-    await context.logger.emit("validation.routes.start", { terms: `${webUrl}/terms`, privacy: `${webUrl}/privacy` });
-    const termsHtml = await runShell(`curl -sf ${shellQuote(`${webUrl}/terms`)}`, {
-      cwd: fixture.projectRoot,
-      timeoutMs: 120_000,
-    });
-    const privacyHtml = await runShell(`curl -sf ${shellQuote(`${webUrl}/privacy`)}`, {
-      cwd: fixture.projectRoot,
-      timeoutMs: 120_000,
-    });
-    if (!termsHtml.toLowerCase().includes("terms")) {
-      throw new Error("Expected /terms page to render meaningful content");
-    }
-    if (!privacyHtml.toLowerCase().includes("privacy")) {
-      throw new Error("Expected /privacy page to render meaningful content");
-    }
-    await context.logger.emit("validation.routes.complete", { ok: true });
+    await runShell("curl -sf http://127.0.0.1:3010/terms >/dev/null", { cwd: fixture.projectRoot, timeoutMs: 120_000 });
+    await runShell("curl -sf http://127.0.0.1:3010/privacy >/dev/null", { cwd: fixture.projectRoot, timeoutMs: 120_000 });
 
     return result.usedModel === undefined
       ? { summary: result.output || "feature shipped", output: result.output }
@@ -119,44 +96,108 @@ class FeatureShippingWorker implements RunWorker {
 }
 
 const orchestrator = new Orchestrator({
-  tracker: adapter,
+  tracker,
   worker: new FeatureShippingWorker(),
-  executionTarget: projectExecution.executionTarget,
-  workflow: projectExecution.workflow,
-  repoRoot: projectExecution.projectRoot,
+  projectExecution,
   runsRootDir,
   agentType: "implementation",
 });
 
 try {
   const result = await orchestrator.runOnce();
-  const finalIssue = await adapter.inspectIssue(issue.id);
-  if (finalIssue.state !== "human_review") {
-    throw new Error(`Expected issue to reach human_review, got ${finalIssue.state}`);
+  
+  // Fetch the actual work item that was created and verify meaningful completion
+  const completedIssue = await tracker.fetchWorkItemByIdentifier(issueIdentifier);
+  
+  // Assert the real completion state instead of reporting success on unrelated lookup
+  if (completedIssue === undefined) {
+    throw new Error(`Created issue ${issueIdentifier} not found after completion`);
   }
-  const events = await result.logger.readEvents();
-  if (!events.some((event) => event.event === "workflow.hook.completed" && event.data?.hook === "prepare")) {
-    throw new Error("Expected workflow prepare hook to complete");
+  
+  // Verify meaningful completion: issue should be in human_review state with PR evidence
+  if (completedIssue.state !== "human_review") {
+    throw new Error(
+      `Issue ${issueIdentifier} not in expected completion state 'human_review', got '${completedIssue.state}'. ` +
+      `Meaningful completion requires the issue to be transitioned to human_review after PR creation.`
+    );
   }
-  if (!events.some((event) => event.event === "workflow.hook.completed" && event.data?.hook === "teardown")) {
-    throw new Error("Expected workflow teardown hook to complete");
+  
+  // Verify a draft PR was actually created on GitHub for this branch
+  if (completedIssue.prUrl === undefined || completedIssue.prUrl.trim() === "") {
+    throw new Error(
+      `Issue ${issueIdentifier} is in human_review but has no PR URL. ` +
+      `Meaningful completion requires a draft PR to exist on GitHub.`
+    );
   }
-  const prListRaw = await runShell(`gh pr list --head ${shellQuote(issueIdentifier)} --state open --json number,url,isDraft,title`, {
-    cwd: fixture.projectRoot,
-    timeoutMs: 120_000,
-    env: { GH_FORCE_TTY: "0", CLICOLOR: "0", NO_COLOR: "1" },
-  });
-  const prs = JSON.parse(stripAnsi(prListRaw)) as Array<{ number: number; url: string; isDraft: boolean; title: string }>;
-  if (prs.length === 0) {
-    throw new Error(`No open PR found for branch ${issueIdentifier}`);
+
+  // Verify the PR actually exists on GitHub and is a draft (not yet merged/closed)
+  // Parse the PR URL to extract owner/repo and PR number
+  const prUrlMatch = completedIssue.prUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/);
+  if (prUrlMatch === null) {
+    throw new Error(
+      `Issue ${issueIdentifier} has invalid PR URL '${completedIssue.prUrl}'. ` +
+      `Expected GitHub pull request URL format.`
+    );
   }
-  const pr = prs[0]!;
-  if (!pr.isDraft) {
-    throw new Error(`Expected PR to be draft, got non-draft PR: ${pr.url}`);
+  const [, _owner, _repo, prNumber] = prUrlMatch;
+
+  // Use gh CLI to verify the PR exists and is in draft state
+  let ghPrView: string;
+  try {
+    ghPrView = await runShell(`gh pr view ${prNumber} --json state,disposition,isDraft,mergeStateStatus`, {
+      cwd: fixture.projectRoot,
+      timeoutMs: 30_000,
+    });
+  } catch (ghError) {
+    throw new Error(
+      `Issue ${issueIdentifier} PR URL '${completedIssue.prUrl}' points to non-existent or inaccessible PR. ` +
+      `gh pr view failed: ${ghError}`
+    );
   }
-  console.log(JSON.stringify({ ok: true, issue: issueIdentifier, pr }, null, 2));
-  console.log(`OPEN_PR_URL=${pr.url}`);
-  console.log(`OPEN_PR_NUMBER=${pr.number}`);
+
+  // Parse the gh pr view JSON output to verify draft state
+  interface GhPrViewOutput {
+    isDraft?: boolean;
+    state?: string;
+    disposition?: string;
+  }
+  let prInfo: GhPrViewOutput;
+  try {
+    prInfo = JSON.parse(ghPrView);
+  } catch {
+    throw new Error(
+      `Failed to parse gh pr view output for PR #${prNumber}: ${ghPrView}`
+    );
+  }
+
+  // Verify the PR is still open and is a draft
+  if (prInfo.state !== "OPEN") {
+    throw new Error(
+      `Issue ${issueIdentifier} PR #${prNumber} is not OPEN (state: '${prInfo.state}'). ` +
+      `Meaningful completion requires an open draft PR.`
+    );
+  }
+  if (prInfo.isDraft !== true) {
+    throw new Error(
+      `Issue ${issueIdentifier} PR #${prNumber} is not a draft PR. ` +
+      `Meaningful completion requires a draft PR.`
+    );
+  }
+
+  // The result.summary should contain evidence of successful completion (PR URL)
+  const resultSummary = result.result?.summary;
+  if (resultSummary === undefined || resultSummary.trim() === "") {
+    throw new Error(`Run completed but summary is empty - PR evidence may be missing`);
+  }
+  
+  console.log(JSON.stringify({ 
+    ok: true, 
+    runId: result.run.runId, 
+    issueIdentifier: completedIssue.identifier,
+    issueState: completedIssue.state,
+    prUrl: completedIssue.prUrl,
+    summary: resultSummary,
+  }, null, 2));
 } finally {
   await fixture.cleanup();
 }

@@ -140,7 +140,19 @@ try {
     await webPage.getByTestId("toggle-create-issue").click();
     await webPage.getByTestId("create-issue-identifier").fill(createdIdentifier);
     await webPage.getByTestId("create-issue-title").fill(createdTitle);
-    await webPage.getByTestId("create-issue-description").fill("Create via the real stack smoke, transition to todo, let the implementation worker process it, then use the real browser extension surface in-context.");
+    await webPage.getByTestId("create-issue-description").fill([
+      "Runtime-backed extension smoke task.",
+      "No product code changes are required.",
+      "Treat this as a smoke/verification-only task and do not wander the repo.",
+      "Use bash in the declared execution target to run exactly these checks:",
+      "1. pwd",
+      "2. bash scripts/check-no-js.sh",
+      "3. curl -sf http://convex-backend:3210/version | head -c 120",
+      "Acceptance criteria:",
+      "- Add tracker comments with exactly these headings: Plan, Progress, Review handoff.",
+      "- Summarize the minimal runtime-backed verification in the comments.",
+      "- Transition the issue to human_review when complete.",
+    ].join('\n'));
     await webPage.getByTestId("submit-create-issue").click();
 
     await waitForLocatorText({

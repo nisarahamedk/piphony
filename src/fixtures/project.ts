@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createServer } from "node:net";
 import { resolveRepoPaths, type RepoPaths } from "../config/repo-paths.js";
-import { onboardProject, type OnboardProjectOptions } from "../onboarding/project-onboarding.js";
-import { readWorkflowSync } from "../workflow/loader.js";
+import { createAgentModelOverrides } from "../pi/agent-types.js";
+import { detectProjectOnboardingDefaults, onboardProject, type OnboardProjectOptions } from "../onboarding/project-onboarding.js";
 import { repoRoot } from "../smoke/_common.js";
 
 const execFileAsync = promisify(execFile);
@@ -42,7 +42,7 @@ export async function cloneReferenceProject(referenceName: string): Promise<Smok
       });
     }
   } catch {
-    // Ignore when the reference repo does not have an origin remote.
+    // ignore refs without origin
   }
   await overlaySourceWorkingTreeDelta(source, projectRoot);
   return {
@@ -52,10 +52,10 @@ export async function cloneReferenceProject(referenceName: string): Promise<Smok
   };
 }
 
-export async function createOnboardedReferenceProject(referenceName: string, options: Omit<OnboardProjectOptions, "projectRoot">): Promise<OnboardedSmokeFixtureProject> {
+export async function createOnboardedReferenceProject(referenceName: string, options?: Omit<OnboardProjectOptions, "projectRoot">): Promise<OnboardedSmokeFixtureProject> {
   const fixture = await cloneReferenceProject(referenceName);
   try {
-    await onboardProject({ ...options, projectRoot: fixture.projectRoot });
+    await ensureOnboardedProject(fixture.projectRoot, options);
     return {
       ...fixture,
       paths: resolveRepoPaths(fixture.projectRoot),
@@ -63,6 +63,93 @@ export async function createOnboardedReferenceProject(referenceName: string, opt
   } catch (error) {
     await fixture.cleanup();
     throw error;
+  }
+}
+
+export async function createOnboardedOpenclawsseumProject(options?: {
+  trackerProvider?: OnboardProjectOptions["trackerProvider"];
+  trackerProjectKey?: string;
+  trackerBoardId?: string;
+  model?: string;
+  force?: boolean;
+}): Promise<OnboardedSmokeFixtureProject> {
+  const fixture = await cloneReferenceProject("openclawsseum");
+  try {
+    await ensureOpenclawsseumProjectFiles(fixture.projectRoot, options?.model ?? "minimax/MiniMax-M2.5");
+    await ensureOnboardedProject(fixture.projectRoot, options === undefined ? undefined : {
+      trackerProvider: options.trackerProvider ?? "local",
+      ...(options.trackerProjectKey === undefined ? {} : { trackerProjectKey: options.trackerProjectKey }),
+      ...(options.trackerBoardId === undefined ? {} : { trackerBoardId: options.trackerBoardId }),
+      model: options.model ?? "minimax/MiniMax-M2.5",
+      execution: {
+        kind: "docker_compose",
+        composeFile: "infra/docker-compose.local.yml",
+        projectName: "openclawsseum",
+        service: "runtime",
+        workdir: "/workspace",
+        endpoints: {
+          runtime: "http://runtime:8787",
+          convex: "http://convex-backend:3210",
+          web: "http://web:3010",
+        },
+        prepareCommand: "bash scripts/piphony/stack-prepare.sh",
+        teardownCommand: "bash scripts/piphony/teardown.sh",
+      },
+      force: true,
+    });
+    return {
+      ...fixture,
+      paths: resolveRepoPaths(fixture.projectRoot),
+    };
+  } catch (error) {
+    await fixture.cleanup();
+    throw error;
+  }
+}
+
+async function ensureOnboardedProject(projectRoot: string, options?: Omit<OnboardProjectOptions, "projectRoot">): Promise<void> {
+  const extensionsDir = join(projectRoot, ".piphony", "extensions");
+  const environmentPath = join(extensionsDir, "environment.ts");
+  const trackerPath = join(extensionsDir, "tracker.ts");
+  if (await exists(environmentPath) && await exists(trackerPath) && await exists(join(projectRoot, ".piphony", "agent-types.json"))) {
+    return;
+  }
+  const defaults = detectProjectOnboardingDefaults(projectRoot);
+  await onboardProject({
+    projectRoot,
+    trackerProvider: options?.trackerProvider ?? defaults.trackerProvider,
+    ...(options?.trackerProjectKey === undefined ? {} : { trackerProjectKey: options.trackerProjectKey }),
+    ...(options?.trackerBoardId === undefined ? {} : { trackerBoardId: options.trackerBoardId }),
+    model: options?.model ?? defaults.model,
+    execution: options?.execution ?? defaults.execution,
+    force: options?.force ?? true,
+  });
+}
+
+async function ensureOpenclawsseumProjectFiles(projectRoot: string, model: string): Promise<void> {
+  const extensionsDir = join(projectRoot, ".piphony", "extensions");
+  await mkdir(extensionsDir, { recursive: true });
+  const environmentPath = join(extensionsDir, "environment.ts");
+  const trackerPath = join(extensionsDir, "tracker.ts");
+  const agentTypesPath = join(projectRoot, ".piphony", "agent-types.json");
+  if (!await exists(environmentPath)) {
+    await writeFile(environmentPath, OPENCLAWSSEUM_ENVIRONMENT_EXTENSION, "utf8");
+  }
+  if (!await exists(trackerPath)) {
+    await writeFile(trackerPath, OPENCLAWSSEUM_TRACKER_EXTENSION, "utf8");
+  }
+  if (!await exists(agentTypesPath)) {
+    await writeFile(agentTypesPath, `${JSON.stringify({ agents: createAgentModelOverrides(model) }, null, 2)}\n`, "utf8");
+  }
+  await rm(join(projectRoot, ".piphony", "workflow.json"), { force: true });
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -100,28 +187,6 @@ async function copyPathWithMode(sourcePath: string, targetPath: string): Promise
   await chmod(targetPath, sourceStat.mode);
 }
 
-export async function createOnboardedOpenclawsseumProject(options?: {
-  trackerProvider?: OnboardProjectOptions["trackerProvider"];
-  trackerProjectKey?: string;
-  trackerBoardId?: string;
-  model?: string;
-  force?: boolean;
-}): Promise<OnboardedSmokeFixtureProject> {
-  const sourceWorkflow = readWorkflowSync(join(repoRoot, "reference", "openclawsseum"));
-  if (sourceWorkflow === undefined) {
-    throw new Error("Expected reference/openclawsseum to contain .piphony/workflow.json for smoke onboarding defaults");
-  }
-  return createOnboardedReferenceProject("openclawsseum", {
-    trackerProvider: options?.trackerProvider ?? "local",
-    ...(options?.trackerProjectKey === undefined ? {} : { trackerProjectKey: options.trackerProjectKey }),
-    ...(options?.trackerBoardId === undefined ? {} : { trackerBoardId: options.trackerBoardId }),
-    model: options?.model ?? "minimax/MiniMax-M2.5",
-    execution: sourceWorkflow.execution,
-    lifecycle: sourceWorkflow.lifecycle,
-    force: options?.force ?? true,
-  });
-}
-
 export async function pickAvailablePort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
     const server = createServer();
@@ -143,3 +208,58 @@ export async function pickAvailablePort(): Promise<number> {
     });
   });
 }
+
+const OPENCLAWSSEUM_ENVIRONMENT_EXTENSION = `export default function (piphony) {
+  piphony.environments.provide({
+    id: "repo/openclawsseum/docker-compose",
+    async prepareEnv(ctx) {
+      await ctx.helpers.execControlPlane({
+        projectRoot: ctx.projectRoot,
+        command: "bash scripts/piphony/stack-prepare.sh",
+        timeoutSeconds: 2700,
+      });
+      const projectName = process.env.OPENCLAWSSEUM_COMPOSE_PROJECT?.trim() || process.env.PIPHONY_DOCKER_COMPOSE_PROJECT_NAME?.trim() || "openclawsseum";
+      return {
+        executionTargets: {
+          runtime: ctx.helpers.createDockerComposeExecutionTarget({
+            projectRoot: ctx.projectRoot,
+            composeFile: "infra/docker-compose.local.yml",
+            projectName,
+            service: "runtime",
+            workdir: "/workspace",
+            endpoints: {
+              runtime: "http://runtime:8787",
+              convex: "http://convex-backend:3210",
+              web: "http://web:3010",
+            },
+          }),
+        },
+        defaultExecutionTarget: "runtime",
+        endpoints: {
+          runtime: "http://runtime:8787",
+          convex: "http://convex-backend:3210",
+          web: "http://web:3010",
+        },
+      };
+    },
+    async tearDownEnv(_prepared, ctx) {
+      await ctx.helpers.execControlPlane({
+        projectRoot: ctx.projectRoot,
+        command: "bash scripts/piphony/teardown.sh",
+        timeoutSeconds: 2700,
+      });
+    },
+  });
+}
+`;
+
+const OPENCLAWSSEUM_TRACKER_EXTENSION = `export default function (piphony) {
+  piphony.trackers.provide({
+    id: "repo/openclawsseum/local",
+    provider: "local",
+    createTracker(ctx) {
+      return ctx.helpers.createLocalTracker({ trackerDir: ctx.trackerDir });
+    },
+  });
+}
+`;

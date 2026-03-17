@@ -1,24 +1,13 @@
-import { readWorkflowSync } from "../workflow/loader.js";
-import { parseSupportedTrackerProvider, type SupportedTrackerProvider } from "../tracker/types.js";
+import { loadOnboardedProjectExecution, getProjectTrackerSelection } from "../project/execution.js";
+import { mergeTrackerSelection, resolveEnvTrackerSelectionOverride, type TrackerSelection } from "../project/tracker-selection.js";
 
-export interface TrackerSelectionConfig {
-  trackerProvider: SupportedTrackerProvider;
-  trackerProjectKey?: string;
-  trackerBoardId?: string;
-}
+export interface TrackerSelectionConfig extends TrackerSelection {}
 
-export function resolveTrackerSelectionConfig(env: NodeJS.ProcessEnv = process.env, projectRoot?: string): TrackerSelectionConfig {
-  const workflowTracker = projectRoot === undefined ? undefined : readWorkflowSync(projectRoot)?.tracker;
-  const trackerProjectKey = normalizeOptionalString(env.PIPHONY_TRACKER_PROJECT_KEY) ?? workflowTracker?.projectKey;
-  const trackerBoardId = normalizeOptionalString(env.PIPHONY_TRACKER_BOARD_ID) ?? workflowTracker?.boardId;
-  return {
-    trackerProvider: parseSupportedTrackerProvider(env.PIPHONY_TRACKER_PROVIDER, workflowTracker?.provider ?? "local"),
-    ...(trackerProjectKey === undefined ? {} : { trackerProjectKey }),
-    ...(trackerBoardId === undefined ? {} : { trackerBoardId }),
-  };
-}
-
-function normalizeOptionalString(raw: string | undefined): string | undefined {
-  const trimmed = raw?.trim();
-  return trimmed === undefined || trimmed === "" ? undefined : trimmed;
+export function resolveTrackerSelectionConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  projectRoot = process.cwd(),
+): TrackerSelectionConfig {
+  const projectExecution = loadOnboardedProjectExecution(projectRoot);
+  const defaultSelection = getProjectTrackerSelection(projectExecution);
+  return mergeTrackerSelection(defaultSelection, resolveEnvTrackerSelectionOverride(env));
 }

@@ -2,6 +2,7 @@ import { attemptCleanup } from "../core/cleanup.js";
 import type { WorkItem } from "../core/types.js";
 import type { ActiveRunRegistry } from "../core/active-run-registry.js";
 import { inspectRun, listRunSummaries } from "../observability/index.js";
+import { resolveTrackerSelectionConfig } from "../config/tracker-provider.js";
 import { resolveTrackerRuntime } from "../tracker/runtime.js";
 import type { TrackerProviderRegistry } from "../tracker/provider-registry.js";
 import type { ChiefOfStaffBoardOverview, ChiefOfStaffIssueContext, ChiefOfStaffServices, CreateIssueInput } from "./types.js";
@@ -17,14 +18,19 @@ export interface LocalChiefOfStaffServicesOptions {
 }
 
 export function createLocalChiefOfStaffServices(options: LocalChiefOfStaffServicesOptions): ChiefOfStaffServices {
-  const trackerRuntime = resolveTrackerRuntime({
-    trackerDir: options.trackerDir,
-    ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
-    ...(options.env === undefined ? {} : { env: options.env }),
-    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
-  });
-  const trackerSelection = trackerRuntime.selection;
-  const trackerRegistry = options.trackerRegistry ?? trackerRuntime.registry;
+  const trackerRuntime = options.trackerRegistry === undefined
+    ? resolveTrackerRuntime({
+        trackerDir: options.trackerDir,
+        ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
+        ...(options.env === undefined ? {} : { env: options.env }),
+        ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+      })
+    : undefined;
+  const trackerSelection = trackerRuntime?.selection
+    ?? (options.projectRoot === undefined
+      ? { trackerProvider: "local" }
+      : resolveTrackerSelectionConfig(options.env ?? process.env, options.projectRoot));
+  const trackerRegistry = options.trackerRegistry ?? trackerRuntime!.registry;
   const resolveTracker = createTrackerResolver(trackerSelection.trackerProvider, trackerRegistry);
 
   return {

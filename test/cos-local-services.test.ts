@@ -8,6 +8,7 @@ import { RunLogger } from "../src/observability/logger.js";
 import { createRunArtifactIndex } from "../src/observability/artifact-index.js";
 import { createLocalTrackerAdapter } from "../src/tracker/local/adapter.js";
 import { resetTrackerState } from "../src/tracker/local/harness.js";
+import { createLocalTrackerProviderClient } from "../src/tracker/local/provider.js";
 
 function makeControl(input?: { onAbort?: () => void }): ActiveRunControl {
   return {
@@ -65,7 +66,12 @@ describe("local ChiefOfStaff services", () => {
     });
     registry.attachControl("run-cos-1", makeControl());
 
-    const services = createLocalChiefOfStaffServices({ trackerDir, runsRootDir, activeRunRegistry: registry });
+    const services = createLocalChiefOfStaffServices({
+      trackerDir,
+      runsRootDir,
+      activeRunRegistry: registry,
+      trackerRegistry: { resolve: () => createLocalTrackerProviderClient(trackerDir) },
+    });
     const issueContext = await services.getIssueContext({ identifier: "LOCAL-401" });
     expect(issueContext.issue?.identifier).toBe("LOCAL-401");
     expect(issueContext.activeRun?.run.runId).toBe("run-cos-1");
@@ -128,7 +134,12 @@ describe("local ChiefOfStaff services", () => {
       aborted = true;
     } }));
 
-    const services = createLocalChiefOfStaffServices({ trackerDir, runsRootDir, activeRunRegistry: registry });
+    const services = createLocalChiefOfStaffServices({
+      trackerDir,
+      runsRootDir,
+      activeRunRegistry: registry,
+      trackerRegistry: { resolve: () => createLocalTrackerProviderClient(trackerDir) },
+    });
     const overview = await services.getBoardOverview({});
     expect(overview.activeRuns.find((run) => run.runId === "run-cos-stale")?.health).toBe("stale");
     expect(overview.needsAttention.some((item) => item.kind === "stale_run" && item.issueIdentifier === "LOCAL-402")).toBe(true);

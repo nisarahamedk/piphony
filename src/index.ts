@@ -1,5 +1,6 @@
 export * from "./core/index.js";
 export * from "./cos/index.js";
+export * from "./extensions/index.js";
 export * from "./git/index.js";
 export * from "./observability/index.js";
 export * from "./observability/logger.js";
@@ -8,6 +9,5 @@ export * from "./project/index.js";
 export * from "./runtime/docker/index.js";
 export * from "./runtime/host/index.js";
 export * from "./tracker/index.js";
-export * from "./workflow/index.js";
 export * from "./onboarding/index.js";
 export * from "./stack/local-stack.js";

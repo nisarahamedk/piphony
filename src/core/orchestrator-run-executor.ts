@@ -2,26 +2,26 @@ import { join } from "node:path";
 import type { ActiveRunRegistry } from "./active-run-registry.js";
 import { errorMessage, errorStack } from "./errors.js";
 import type { RunLogger } from "../observability/logger.js";
-import { WorkflowExecutor } from "../workflow/executor.js";
-import type { WorkflowDefinition } from "../workflow/types.js";
-import type { ExecutionTarget, RunRecord, RunSummaryRecord, RunWorkerResult, WorkItem } from "./types.js";
+import type { RunRecord, RunSummaryRecord, RunWorkerResult, WorkItem } from "./types.js";
 import { nowIso } from "./utils.js";
 import type { RunWorker } from "./orchestrator.js";
+import type { ProjectExecutionContext } from "../project/execution.js";
+import { prepareProjectEnvironment, teardownProjectEnvironment } from "../project/execution.js";
+import type { PreparedEnvironment } from "../extensions/types.js";
 
 export interface ExecuteOrchestratorRunOptions {
   workItem: WorkItem;
   run: RunRecord;
   logger: RunLogger;
   worker: RunWorker;
-  executionTarget?: ExecutionTarget;
-  workflow?: WorkflowDefinition;
+  projectExecution?: ProjectExecutionContext;
   repoRoot?: string;
   activeRunRegistry?: ActiveRunRegistry;
   heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
 }
 
 export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOptions): Promise<RunWorkerResult> {
-  const { workItem, run, logger, worker, executionTarget, workflow, repoRoot, activeRunRegistry, heartbeat } = options;
+  const { workItem, run, logger, worker, projectExecution, activeRunRegistry, heartbeat } = options;
 
   await logger.emit("run.created", {
     identifier: workItem.identifier,
@@ -30,24 +30,43 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
   });
   await heartbeat?.({ phase: "created" });
 
-  let workflowExecutor: WorkflowExecutor | undefined;
+  let preparedEnvironment: PreparedEnvironment | undefined;
+  let prepareAttempted = false;
+  let prepareSucceeded = false;
   let thrownError: unknown;
 
   try {
-    if (workflow !== undefined) {
-      if (repoRoot === undefined) {
-        throw new Error("repoRoot is required when workflow is configured");
-      }
-      if (executionTarget === undefined) {
-        throw new Error("executionTarget is required when workflow is configured");
-      }
-      workflowExecutor = new WorkflowExecutor({
-        repoRoot,
-        workflow,
-        executionTarget,
-        logger,
+    let executionTarget = undefined;
+    if (projectExecution !== undefined) {
+      await logger.emit("extension.lifecycle.prepare.started", {
+        provider: projectExecution.runtime.environmentProvider.id,
       });
-      await workflowExecutor.runHook("prepare");
+      prepareAttempted = true;
+      let prepared: Awaited<ReturnType<typeof prepareProjectEnvironment>>;
+      try {
+        prepared = await prepareProjectEnvironment({ context: projectExecution, logger });
+      } catch (prepareError) {
+        // Target resolution failed, but prepareEnv succeeded and returned a real environment.
+        // Capture it for teardown before re-throwing.
+        const errorWithEnv = prepareError as Error & { preparedEnvironment?: PreparedEnvironment };
+        if (errorWithEnv.preparedEnvironment !== undefined) {
+          preparedEnvironment = errorWithEnv.preparedEnvironment;
+          prepareSucceeded = true;
+        }
+        throw prepareError;
+      }
+      prepareSucceeded = true;
+      preparedEnvironment = prepared.preparedEnvironment;
+      executionTarget = prepared.executionTarget;
+      run.executionTarget = executionTarget.name;
+      run.updatedAt = nowIso();
+      activeRunRegistry?.updateStatus(run.runId, run.status);
+      await logger.writeStatus(run);
+      await logger.emit("extension.lifecycle.prepare.completed", {
+        provider: projectExecution.runtime.environmentProvider.id,
+        executionTarget: executionTarget.name,
+        endpoints: preparedEnvironment.endpoints,
+      });
       await heartbeat?.({ phase: "prepare_complete" });
     }
 
@@ -66,9 +85,7 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
       ...(heartbeat === undefined ? {} : { heartbeat }),
       ...(activeRunRegistry === undefined ? {} : { activeRunRegistry }),
     };
-    const context = executionTarget === undefined
-      ? contextBase
-      : { ...contextBase, executionTarget };
+    const context = executionTarget === undefined ? contextBase : { ...contextBase, executionTarget };
     const result = await worker.execute(context);
     run.status = "completed";
     run.updatedAt = nowIso();
@@ -79,7 +96,6 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
       await logger.writeTranscript(result.output);
     }
     await logger.emit("run.completed", { summary: result.summary });
-    // Derive sessionFile from canonical active run registry artifacts (set via attachControl)
     const sessionFile = activeRunRegistry?.getByRunId(run.runId)?.artifacts.sessionFile;
     const summaryRecord: Parameters<typeof buildRunSummaryRecord>[0] = {
       run,
@@ -105,7 +121,6 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
       message: errorMessage(error),
       stack: errorStack(error),
     });
-    // Derive sessionFile from canonical active run registry artifacts (set via attachControl)
     const sessionFile = activeRunRegistry?.getByRunId(run.runId)?.artifacts.sessionFile;
     const failedSummary: Parameters<typeof buildRunSummaryRecord>[0] = {
       run,
@@ -119,11 +134,36 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
     await heartbeat?.({ phase: "failed", error: errorMessage(error) });
     throw error;
   } finally {
-    if (workflowExecutor !== undefined) {
+    // Always attempt teardown when preparation was attempted, even if it failed.
+    // The environment provider may have created external state (e.g., docker containers)
+    // that needs cleanup regardless of whether prepare succeeded.
+    //
+    // If prepare succeeded, pass the real PreparedEnvironment to teardown.
+    // If prepare failed (threw before returning), we have no choice but to use a fallback
+    // because we don't have the actual environment object - but we still attempt cleanup
+    // in case the provider created partial state.
+    if (projectExecution !== undefined && prepareAttempted) {
+      const environmentToTeardown = prepareSucceeded && preparedEnvironment !== undefined
+        ? preparedEnvironment
+        : {
+            // Fallback: only used when prepare threw before returning
+            executionTargets: {},
+            endpoints: {},
+          };
       try {
-        await workflowExecutor.runHook("teardown");
+        await logger.emit("extension.lifecycle.teardown.started", {
+          provider: projectExecution.runtime.environmentProvider.id,
+        });
+        await teardownProjectEnvironment({
+          context: projectExecution,
+          preparedEnvironment: environmentToTeardown,
+          logger,
+        });
+        await logger.emit("extension.lifecycle.teardown.completed", {
+          provider: projectExecution.runtime.environmentProvider.id,
+        });
       } catch (teardownError) {
-        await logger.emit("workflow.teardown.failed", {
+        await logger.emit("extension.lifecycle.teardown.failed", {
           message: errorMessage(teardownError),
           stack: errorStack(teardownError),
         });

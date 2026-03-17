@@ -4,24 +4,25 @@ import { errorMessage } from "../core/errors.js";
 import { Orchestrator } from "../core/orchestrator.js";
 import { parseOrchestratorWatchConfig } from "./orchestrator-watch-config.js";
 import { ProviderCapacityService } from "../pi/provider-middleware.js";
-import { loadOnboardedProjectExecution } from "../project/execution.js";
+import { loadOnboardedProjectExecution, createProjectTracker } from "../project/execution.js";
 import { createLocalStackWorker } from "../stack/local-worker-factory.js";
 import { LocalTrackerStatusSink } from "../tracker/local/status-sink.js";
 import { LocalTrackerStore } from "../tracker/local/state.js";
-import { resolveTrackerRuntime } from "../tracker/runtime.js";
 
 const config = parseOrchestratorWatchConfig(process.env);
-const projectExecution = await loadOnboardedProjectExecution(config.repoRoot);
-const trackerStore = new LocalTrackerStore({ trackerDir: config.trackerDir });
-const trackerRuntime = resolveTrackerRuntime({
-  trackerDir: config.trackerDir,
-  projectRoot: projectExecution.projectRoot,
-  env: process.env,
+const projectExecution = loadOnboardedProjectExecution(config.repoRoot);
+const trackerSelection = {
   trackerProvider: config.trackerProvider,
   ...(config.trackerProjectKey === undefined ? {} : { trackerProjectKey: config.trackerProjectKey }),
   ...(config.trackerBoardId === undefined ? {} : { trackerBoardId: config.trackerBoardId }),
+};
+const trackerStore = new LocalTrackerStore({ trackerDir: config.trackerDir });
+const tracker = createProjectTracker({
+  context: projectExecution,
+  trackerDir: config.trackerDir,
+  env: process.env,
+  selection: trackerSelection,
 });
-const tracker = trackerRuntime.resolve(config.trackerProvider);
 if (config.workerMode === "smoke" && tracker.provider !== "local") {
   throw new Error("Smoke worker mode requires the local tracker provider");
 }
@@ -36,9 +37,7 @@ const worker = createLocalStackWorker({
 const orchestrator = new Orchestrator({
   tracker,
   worker,
-  executionTarget: projectExecution.executionTarget,
-  workflow: projectExecution.workflow,
-  repoRoot: projectExecution.projectRoot,
+  projectExecution,
   runsRootDir: config.runsRootDir,
   agentType: "implementation",
   pollIntervalMs: config.pollIntervalMs,
@@ -73,7 +72,7 @@ process.on("SIGTERM", () => {
 });
 
 console.log(
-  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId}, workerMode=${config.workerMode}, trackerProvider=${config.trackerProvider}, workflow=${projectExecution.workflowPath}, executionTarget=${projectExecution.executionTarget.name}${config.trackerProjectKey === undefined ? "" : `, trackerProjectKey=${config.trackerProjectKey}`}${config.trackerBoardId === undefined ? "" : `, trackerBoardId=${config.trackerBoardId}`})`,
+  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId}, workerMode=${config.workerMode}, trackerProvider=${tracker.provider}, extensions=${projectExecution.extensionsDir}, environmentProvider=${projectExecution.runtime.environmentProvider.id})`,
 );
 
 for (;;) {

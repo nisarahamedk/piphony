@@ -63,6 +63,7 @@ function buildImplementationPrompt(issueIdentifier: string): string {
     `First call tracker_get_issue for ${issueIdentifier} and use the issue title/description as the source of truth.`,
     "If the issue is currently in todo or rework, transition it to in_progress before starting implementation.",
     "Inspect the repository, make the necessary code changes in the current working tree, and run the most relevant validation commands for the work you performed.",
+    "If the issue description explicitly says this is a smoke/verification-only task or that no product code changes are required, do not wander the repo. Instead, do the minimal declared verification, add the required tracker comments, and hand off cleanly.",
     "Use concise tracker comments with exactly these headings as work progresses: Plan, Progress, Review handoff.",
     "The Plan comment should summarize the concrete implementation approach.",
     "The Progress comment should summarize the key code changes and validation you ran.",

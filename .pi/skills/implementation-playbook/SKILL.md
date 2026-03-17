@@ -1,6 +1,6 @@
 ---
 name: implementation-playbook
-description: Use when the slice is already defined and you should run a staff-level implementation workflow through subagents: clarify the exact acceptance bar, delegate research if needed, delegate coding to the implementation subagent, review the actual diff, require the right smoke/live coverage, and do not accept the slice until full validation is green. Do not use for early requirement discovery, open-ended architecture exploration, or tiny direct edits where a heavyweight subagent workflow would add unnecessary overhead.
+description: Use when the slice is already defined and you should run a staff-level implementation workflow through subagents. clarify the exact acceptance bar, delegate research if needed, delegate coding to the implementation subagent, review the actual diff, require the right smoke/live coverage, and do not accept the slice until full validation is green. Do not use for early requirement discovery, open-ended architecture exploration, or tiny direct edits where a heavyweight subagent workflow would add unnecessary overhead.
 ---
 
 # Implementation Playbook

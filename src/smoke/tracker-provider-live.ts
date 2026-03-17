@@ -25,7 +25,13 @@ if ((provider === "linear" && !hasLinearTrackerLiveValidationConfig(process.env)
 const trackerDir = await mkdtemp(join(tmpdir(), `piphony-${provider}-tracker-live-`));
 
 try {
-  const trackerRuntime = resolveTrackerRuntime({ trackerDir, env: process.env });
+  // Use explicitProvider to bypass onboarded project requirement
+  // This allows live validation of external providers without project onboarding
+  const trackerRuntime = resolveTrackerRuntime({
+    trackerDir,
+    env: process.env,
+    explicitProvider: provider,
+  });
   const tracker = trackerRuntime.resolve(provider);
   const issues = await tracker.fetchBoardWorkItems();
   const sample = issues[0];
