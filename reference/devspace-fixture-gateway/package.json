@@ -1,0 +1,12 @@
+{
+  "name": "devspace-fixture-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@apollo/server": "^4.11.3",
+    "graphql": "^16.11.0"
+  }
+}

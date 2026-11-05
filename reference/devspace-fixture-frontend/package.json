@@ -1,0 +1,13 @@
+{
+  "name": "devspace-fixture-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  }
+}
