@@ -27,6 +27,7 @@
     "smoke:pi": "tsx src/smoke/pi.ts",
     "smoke:local-e2e": "tsx src/smoke/local-e2e.ts",
     "smoke:stack": "tsx src/smoke/docker-openclawsseum.ts",
+    "smoke:devspace-local": "tsx src/smoke/devspace-local.ts",
     "smoke:extension-stack": "tsx src/smoke/stack-ui.ts",
     "smoke:restart": "tsx src/smoke/restart.ts",
     "smoke:observability": "tsx src/smoke/observability.ts",

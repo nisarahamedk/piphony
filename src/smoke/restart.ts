@@ -36,8 +36,8 @@ const reused = await prepareWorktree({
   prState: "open",
 });
 if (!reused.reusedExistingBranch) throw new Error("Expected existing branch to be reused");
-const progress = await readProgressFile(reused.workspacePath);
-if (!progress?.includes("LOCAL-401 existing branch")) throw new Error("Expected PROGRESS.md to be available in reused workspace");
+const progress = await readProgressFile(reused.worktreePath);
+if (!progress?.includes("LOCAL-401 existing branch")) throw new Error("Expected PROGRESS.md to be available in reused worktree");
 
 const fresh = await prepareWorktree({
   repoPath,

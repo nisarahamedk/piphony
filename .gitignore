@@ -10,7 +10,16 @@ apps/web/.output/
 pi-session-*.html
 research.md
 .DS_Store
-reference/
+reference/*
+!reference/devspace-fixture-workspace/
+!reference/devspace-fixture-workspace/**
+!reference/devspace-fixture-frontend/
+!reference/devspace-fixture-frontend/**
+!reference/devspace-fixture-gateway/
+!reference/devspace-fixture-gateway/**
+!reference/devspace-fixture-backend/
+!reference/devspace-fixture-backend/**
 .piphony-var-utility-v3/
 apps/extension/
 .env.local
+reference/devspace-fixture-workspace/.devspace/

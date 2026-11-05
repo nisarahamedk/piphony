@@ -8,7 +8,7 @@ import { requireLinearTrackerConfig } from "../tracker/linear/config.js";
 import { LinearTrackerAdapter } from "../tracker/linear/adapter.js";
 import { requireJiraTrackerConfig } from "../tracker/jira/config.js";
 import { JiraTrackerAdapter } from "../tracker/jira/adapter.js";
-import type { PiphonyExtensionAPI, ExtensionHelperAPI, TransitionHook, EnvironmentProvider, TrackerProviderDefinition } from "./types.js";
+import type { PiphonyExtensionAPI, ExtensionHelperAPI, TransitionHook, RuntimePlatformProvider, TrackerProviderDefinition } from "./types.js";
 import type { ExtensionRegistry } from "./registry.js";
 
 const execFileAsync = promisify(execFile);
@@ -69,9 +69,9 @@ export function createExtensionHelpers(): ExtensionHelperAPI {
 export function createExtensionApi(registry: ExtensionRegistry): PiphonyExtensionAPI {
   const helpers = createExtensionHelpers();
   return {
-    environments: {
-      provide(provider: EnvironmentProvider) {
-        registry.registerEnvironment(provider);
+    runtimePlatforms: {
+      provide(provider: RuntimePlatformProvider) {
+        registry.registerRuntimePlatform(provider);
       },
     },
     trackers: {

@@ -210,9 +210,10 @@ export async function pickAvailablePort(): Promise<number> {
 }
 
 const OPENCLAWSSEUM_ENVIRONMENT_EXTENSION = `export default function (piphony) {
-  piphony.environments.provide({
+  piphony.runtimePlatforms.provide({
     id: "repo/openclawsseum/docker-compose",
-    async prepareEnv(ctx) {
+    platformType: "docker-compose",
+    async prepareWorkspace(ctx) {
       await ctx.helpers.execControlPlane({
         projectRoot: ctx.projectRoot,
         command: "bash scripts/piphony/stack-prepare.sh",
@@ -220,6 +221,34 @@ const OPENCLAWSSEUM_ENVIRONMENT_EXTENSION = `export default function (piphony) {
       });
       const projectName = process.env.OPENCLAWSSEUM_COMPOSE_PROJECT?.trim() || process.env.PIPHONY_DOCKER_COMPOSE_PROJECT_NAME?.trim() || "openclawsseum";
       return {
+        workspace: {
+          workspaceId: projectName,
+          platformType: "docker-compose",
+          primaryEndpoint: "http://runtime:8787",
+        },
+        endpoints: {
+          runtime: "http://runtime:8787",
+          convex: "http://convex-backend:3210",
+          web: "http://web:3010",
+        },
+      };
+    },
+    async tearDownWorkspace(_workspace, ctx) {
+      await ctx.helpers.execControlPlane({
+        projectRoot: ctx.projectRoot,
+        command: "bash scripts/piphony/teardown.sh",
+        timeoutSeconds: 2700,
+      });
+    },
+    async attachRepo(ctx) {
+      const projectName = process.env.OPENCLAWSSEUM_COMPOSE_PROJECT?.trim() || process.env.PIPHONY_DOCKER_COMPOSE_PROJECT_NAME?.trim() || "openclawsseum";
+      return {
+        attachment: {
+          attachmentId: "openclawsseum-" + ctx.repoIdentifier,
+          repoIdentifier: ctx.repoIdentifier,
+          workspaceId: projectName,
+          branch: ctx.branch,
+        },
         executionTargets: {
           runtime: ctx.helpers.createDockerComposeExecutionTarget({
             projectRoot: ctx.projectRoot,
@@ -242,13 +271,7 @@ const OPENCLAWSSEUM_ENVIRONMENT_EXTENSION = `export default function (piphony) {
         },
       };
     },
-    async tearDownEnv(_prepared, ctx) {
-      await ctx.helpers.execControlPlane({
-        projectRoot: ctx.projectRoot,
-        command: "bash scripts/piphony/teardown.sh",
-        timeoutSeconds: 2700,
-      });
-    },
+    async detachRepo() {},
   });
 }
 `;

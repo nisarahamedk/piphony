@@ -4,24 +4,24 @@ import {
   MissingExtensionProviderError,
 } from "./errors.js";
 import type {
-  EnvironmentProvider,
   LoadedPiphonyExtensions,
+  RuntimePlatformProvider,
   TransitionHook,
   TrackerProviderDefinition,
   DiscoveredExtension,
 } from "./types.js";
 
 export class ExtensionRegistry {
-  private readonly environments = new Map<string, EnvironmentProvider>();
+  private readonly runtimePlatforms = new Map<string, RuntimePlatformProvider>();
   private readonly trackers = new Map<string, TrackerProviderDefinition>();
   private readonly preTransitionHooks: TransitionHook[] = [];
   private readonly postTransitionHooks: TransitionHook[] = [];
 
-  registerEnvironment(provider: EnvironmentProvider): void {
-    if (this.environments.has(provider.id)) {
-      throw new DuplicateExtensionProviderError(`Duplicate environment provider id: ${provider.id}`);
+  registerRuntimePlatform(provider: RuntimePlatformProvider): void {
+    if (this.runtimePlatforms.has(provider.id)) {
+      throw new DuplicateExtensionProviderError(`Duplicate runtime platform provider id: ${provider.id}`);
     }
-    this.environments.set(provider.id, provider);
+    this.runtimePlatforms.set(provider.id, provider);
   }
 
   registerTracker(provider: TrackerProviderDefinition): void {
@@ -40,16 +40,19 @@ export class ExtensionRegistry {
   }
 
   finalize(discoveredExtensions: readonly DiscoveredExtension[]): LoadedPiphonyExtensions {
-    const environmentProvider = requireExactlyOneProvider(
-      [...this.environments.values()],
-      "environment",
+    // Must have exactly one RuntimePlatformProvider
+    const runtimePlatformProvider = requireExactlyOneProvider(
+      [...this.runtimePlatforms.values()],
+      "runtime platform",
     );
+
     const trackerProvider = requireExactlyOneProvider(
       [...this.trackers.values()],
       "tracker",
     );
+
     return {
-      environmentProvider,
+      runtimePlatformProvider,
       trackerProvider,
       preTransitionHooks: [...this.preTransitionHooks],
       postTransitionHooks: [...this.postTransitionHooks],

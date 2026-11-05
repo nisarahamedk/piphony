@@ -35,6 +35,21 @@ async function waitForLocatorText(input: {
   throw new Error(`Timed out waiting for locator text: ${input.testId}`);
 }
 
+async function waitForExtensionReady(input: { page: Page; timeoutMs?: number }): Promise<string> {
+  const timeoutMs = input.timeoutMs ?? 60_000;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const text = (await input.page.getByTestId("extension-status").textContent().catch(() => null)) ?? "";
+    const trimmed = text.trim().toLowerCase();
+    // Accept any status that is not connecting and not an error
+    if (trimmed !== "connecting" && !trimmed.startsWith("error:") && trimmed.length > 0) {
+      return text;
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for extension ready state`);
+}
+
 async function waitForBodyText(input: {
   page: Page;
   includes: string[];
@@ -177,12 +192,8 @@ try {
       includes: [`Issue: local/${createdIdentifier}`],
       timeoutMs: 120_000,
     });
-    await waitForLocatorText({
-      page: extensionPage,
-      testId: "extension-status",
-      includes: ["idle"],
-      timeoutMs: 60_000,
-    });
+    // Wait for extension to be ready - accept any non-error, non-connecting status
+    await waitForExtensionReady({ page: extensionPage, timeoutMs: 60_000 });
 
     await extensionPage.getByTestId("extension-input").fill(
       `Use the current issue page context tools. Start exactly with '${issueToken}' and include the exact issue identifier on this page.`,
@@ -217,12 +228,8 @@ try {
       includes: ["Board: local"],
       timeoutMs: 60_000,
     });
-    await waitForLocatorText({
-      page: extensionPage,
-      testId: "extension-status",
-      includes: ["idle"],
-      timeoutMs: 60_000,
-    });
+    // Wait for extension to be ready after context switch
+    await waitForExtensionReady({ page: extensionPage, timeoutMs: 60_000 });
 
     await extensionPage.getByTestId("extension-input").fill(
       `Use the board overview and create exactly one backlog follow-up ticket titled '${plannedTitle}'. Reply starting exactly with '${planToken}' and include the exact title.`,

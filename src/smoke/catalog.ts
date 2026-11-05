@@ -43,6 +43,13 @@ export const smokeCommands: SmokeCommandDefinition[] = [
     includedInAll: true,
   },
   {
+    script: "smoke:devspace-local",
+    entrypoint: "src/smoke/devspace-local.ts",
+    lane: "manual",
+    description: "Standalone DevSpace proving-ground smoke against the multi-repo fixture workspace on Minikube, with explicit kind opt-in for local fallback.",
+    includedInAll: false,
+  },
+  {
     script: "smoke:restart",
     entrypoint: "src/smoke/restart.ts",
     lane: "deterministic",

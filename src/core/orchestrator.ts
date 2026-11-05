@@ -17,6 +17,7 @@ import type { ActiveRunRegistry } from "./active-run-registry.js";
 import { errorMessage } from "./errors.js";
 import { createRunId, nowIso } from "./utils.js";
 import type { ProjectExecutionContext } from "../project/execution.js";
+import { WorkspaceCoordinator, type WorkspaceHandle } from "./workspace-coordinator.js";
 
 export interface RunWorkerContext {
   workItem: WorkItem;
@@ -24,7 +25,6 @@ export interface RunWorkerContext {
   logger: RunLogger;
   runArtifacts: RunArtifacts;
   executionTarget?: ExecutionTarget;
-  workspacePath?: string;
   heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
   activeRunRegistry?: ActiveRunRegistry;
 }
@@ -65,6 +65,7 @@ interface RunningEntry {
   result?: RunWorkerResult;
   error?: unknown;
   settled: boolean;
+  workspaceHandle?: WorkspaceHandle;
 }
 
 const ACTIVE_STATES = new Set<string>(ACTIVE_WORK_ITEM_STATES);
@@ -87,6 +88,10 @@ export class Orchestrator {
   private status: OrchestratorSnapshot["status"] = "idle";
   private lastPollAt: string | undefined;
   private nextPollAt: string | undefined;
+
+  // Workspace coordinator for managing workspace lifecycle above runs
+  private workspaceCoordinator: WorkspaceCoordinator | undefined;
+  private workspaceHandle: WorkspaceHandle | undefined;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.instanceId = options.instanceId ?? createRunId("orchestrator");
@@ -127,6 +132,9 @@ export class Orchestrator {
   }
 
   async shutdown(): Promise<void> {
+    // Teardown workspace if open
+    await this.teardownWorkspace();
+
     this.status = "offline";
     this.nextPollAt = undefined;
     await this.flushSnapshot();
@@ -170,11 +178,17 @@ export class Orchestrator {
       workerName: this.options.worker.name,
       artifacts: createRunArtifactIndex(logger),
     });
+
+    // Prepare workspace once above this run (workspace lifecycle is above runs)
+    await this.prepareWorkspace(logger);
+
     try {
       const result = await this.executeWorkItem({ workItem, run, logger });
       return { run, result, workItem, logger };
     } finally {
       this.options.activeRunRegistry?.remove(run.runId);
+      // Teardown workspace after run completes
+      await this.teardownWorkspace();
     }
   }
 
@@ -222,29 +236,50 @@ export class Orchestrator {
     await this.options.statusSink?.upsertWorker(workerHeartbeat);
     await this.flushSnapshot();
 
+    // Prepare workspace once for this dispatch (if not already prepared)
+    await this.prepareWorkspace(logger);
+
+    // Only assign workspace handle if it's defined
+    if (this.workspaceHandle !== undefined) {
+      entry.workspaceHandle = this.workspaceHandle;
+    }
+
     entry.promise = this.executeTrackedEntry(entry);
   }
 
   private async executeTrackedEntry(entry: RunningEntry): Promise<void> {
+    // Build work item input - only include workspaceHandle if defined
+    const workItemInput: {
+      workItem: WorkItem;
+      run: RunRecord;
+      logger: RunLogger;
+      heartbeat: (details?: Record<string, unknown>) => Promise<void>;
+      workspaceHandle?: WorkspaceHandle;
+    } = {
+      workItem: entry.workItem,
+      run: entry.run,
+      logger: entry.logger,
+      heartbeat: async (details) => {
+        entry.workerHeartbeat = {
+          ...entry.workerHeartbeat,
+          lastSeenAt: nowIso(),
+          details: details === undefined ? entry.workerHeartbeat.details : { ...entry.workerHeartbeat.details, ...details },
+        };
+        this.options.activeRunRegistry?.updateHeartbeat(entry.run.runId, entry.workerHeartbeat);
+        if (typeof details?.phase === "string") {
+          this.options.activeRunRegistry?.updatePhase(entry.run.runId, details.phase);
+        }
+        await this.options.statusSink?.upsertWorker(entry.workerHeartbeat);
+        await this.flushSnapshot();
+      },
+    };
+
+    if (entry.workspaceHandle !== undefined) {
+      workItemInput.workspaceHandle = entry.workspaceHandle;
+    }
+
     try {
-      entry.result = await this.executeWorkItem({
-        workItem: entry.workItem,
-        run: entry.run,
-        logger: entry.logger,
-        heartbeat: async (details) => {
-          entry.workerHeartbeat = {
-            ...entry.workerHeartbeat,
-            lastSeenAt: nowIso(),
-            details: details === undefined ? entry.workerHeartbeat.details : { ...entry.workerHeartbeat.details, ...details },
-          };
-          this.options.activeRunRegistry?.updateHeartbeat(entry.run.runId, entry.workerHeartbeat);
-          if (typeof details?.phase === "string") {
-            this.options.activeRunRegistry?.updatePhase(entry.run.runId, details.phase);
-          }
-          await this.options.statusSink?.upsertWorker(entry.workerHeartbeat);
-          await this.flushSnapshot();
-        },
-      });
+      entry.result = await this.executeWorkItem(workItemInput);
     } catch (error) {
       entry.error = error;
       this.options.activeRunRegistry?.updateError(entry.run.runId, errorMessage(error));
@@ -266,6 +301,11 @@ export class Orchestrator {
       this.claimed.delete(entry.workItem.externalId);
       this.options.activeRunRegistry?.remove(entry.run.runId);
       await this.options.statusSink?.deleteWorker(entry.workerHeartbeat.workerId);
+
+      // After all runs are done, teardown workspace
+      if (this.running.size === 0) {
+        await this.teardownWorkspace();
+      }
     }
   }
 
@@ -310,18 +350,96 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Prepare workspace once above run execution.
+   * If projectExecution is provided, creates a workspace coordinator and prepares the workspace.
+   * For polling mode, workspace is reused across multiple runs in the same session.
+   * For runOnce mode, workspace is prepared for the single run.
+   */
+  private async prepareWorkspace(logger: RunLogger): Promise<void> {
+    // Already prepared
+    if (this.workspaceHandle !== undefined) {
+      return;
+    }
+
+    // No projectExecution means no workspace needed (e.g., using stub worker)
+    if (this.options.projectExecution === undefined) {
+      return;
+    }
+
+    const { runtime, projectRoot } = this.options.projectExecution;
+    const runtimePlatform = runtime.runtimePlatformProvider;
+
+    // Create coordinator and prepare workspace
+    this.workspaceCoordinator = new WorkspaceCoordinator(runtimePlatform, projectRoot);
+    this.workspaceHandle = await this.workspaceCoordinator.prepare({
+      projectRoot,
+      logger,
+      env: process.env,
+    });
+  }
+
+  /**
+   * Teardown workspace after all runs complete.
+   */
+  private async teardownWorkspace(): Promise<void> {
+    if (this.workspaceCoordinator !== undefined && this.workspaceCoordinator.isOpen()) {
+      await this.workspaceCoordinator.teardown();
+      this.workspaceCoordinator = undefined;
+      this.workspaceHandle = undefined;
+    }
+  }
+
   private async executeWorkItem(input: {
     workItem: WorkItem;
     run: RunRecord;
     logger: RunLogger;
     heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
+    workspaceHandle?: WorkspaceHandle;
   }): Promise<RunWorkerResult> {
-    return executeOrchestratorRun({
-      ...input,
+    // When workspaceHandle is provided, it must be used (coordinator mode)
+    // When workspaceHandle is undefined but projectExecution is present, that's an error
+    // (orchestrator should have prepared workspace before calling executeWorkItem)
+    const effectiveWorkspaceHandle = input.workspaceHandle ?? this.workspaceHandle;
+
+    if (this.options.projectExecution !== undefined && effectiveWorkspaceHandle === undefined) {
+      throw new Error(
+        "Workspace handle is required when projectExecution is configured. " +
+        "Orchestrator should prepare workspace before executing work items.",
+      );
+    }
+
+    // Build options object - only include defined properties to satisfy exactOptionalPropertyTypes
+    const options: {
+      workItem: WorkItem;
+      run: RunRecord;
+      logger: RunLogger;
+      worker: RunWorker;
+      projectExecution?: ProjectExecutionContext;
+      workspaceHandle?: WorkspaceHandle;
+      activeRunRegistry?: ActiveRunRegistry;
+      heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
+    } = {
+      workItem: input.workItem,
+      run: input.run,
+      logger: input.logger,
       worker: this.options.worker,
-      ...(this.options.projectExecution === undefined ? {} : { projectExecution: this.options.projectExecution }),
-      ...(this.options.activeRunRegistry === undefined ? {} : { activeRunRegistry: this.options.activeRunRegistry }),
-    });
+    };
+
+    if (this.options.projectExecution !== undefined) {
+      options.projectExecution = this.options.projectExecution;
+    }
+    if (effectiveWorkspaceHandle !== undefined) {
+      options.workspaceHandle = effectiveWorkspaceHandle;
+    }
+    if (this.options.activeRunRegistry !== undefined) {
+      options.activeRunRegistry = this.options.activeRunRegistry;
+    }
+    if (input.heartbeat !== undefined) {
+      options.heartbeat = input.heartbeat;
+    }
+
+    return executeOrchestratorRun(options);
   }
 
   private snapshot(): OrchestratorSnapshot {

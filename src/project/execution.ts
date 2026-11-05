@@ -1,10 +1,9 @@
 import { resolve } from "node:path";
 import { createExtensionHelpers } from "../extensions/api.js";
-import { createTransitionAwareTracker, resolvePreparedExecutionTarget } from "../extensions/context.js";
+import { createTransitionAwareTracker } from "../extensions/context.js";
 import { resolveProjectExtensionsDir, resolveUserExtensionsDir } from "../extensions/discovery.js";
 import { isProjectOnboarded, loadProjectExtensions } from "../extensions/runtime.js";
-import type { LoadedPiphonyExtensions, PreparedEnvironment } from "../extensions/types.js";
-import type { ExecutionTarget } from "../core/types.js";
+import type { LoadedPiphonyExtensions } from "../extensions/types.js";
 import type { RunLogger } from "../observability/logger.js";
 import { createTrackerProviderRegistry } from "../tracker/provider-registry.js";
 import type { TrackerProviderClient } from "../tracker/types.js";
@@ -60,43 +59,6 @@ export function createProjectTracker(input: CreateProjectTrackerInput): TrackerP
     tracker: baseTracker,
     runtime: input.context.runtime,
     ...(input.logger === undefined ? {} : { logger: input.logger }),
-  });
-}
-
-export async function prepareProjectEnvironment(input: {
-  context: ProjectExecutionContext;
-  logger: RunLogger;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{ preparedEnvironment: PreparedEnvironment; executionTarget: ExecutionTarget }> {
-  const helpers = createExtensionHelpers();
-  const preparedEnvironment = await input.context.runtime.environmentProvider.prepareEnv({
-    projectRoot: input.context.projectRoot,
-    logger: input.logger,
-    env: input.env ?? process.env,
-    helpers,
-  });
-  let executionTarget: ExecutionTarget;
-  try {
-    executionTarget = resolvePreparedExecutionTarget(preparedEnvironment);
-  } catch (targetError) {
-    (targetError as Error & { preparedEnvironment?: PreparedEnvironment }).preparedEnvironment = preparedEnvironment;
-    throw targetError;
-  }
-  return { preparedEnvironment, executionTarget };
-}
-
-export async function teardownProjectEnvironment(input: {
-  context: ProjectExecutionContext;
-  preparedEnvironment: PreparedEnvironment;
-  logger: RunLogger;
-  env?: NodeJS.ProcessEnv;
-}): Promise<void> {
-  const helpers = createExtensionHelpers();
-  await input.context.runtime.environmentProvider.tearDownEnv(input.preparedEnvironment, {
-    projectRoot: input.context.projectRoot,
-    logger: input.logger,
-    env: input.env ?? process.env,
-    helpers,
   });
 }
 

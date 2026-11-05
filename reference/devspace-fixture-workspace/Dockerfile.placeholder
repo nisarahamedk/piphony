@@ -1,0 +1,8 @@
+# DevSpace requires a Dockerfile at workspace root - actual images built from subdirectories
+# This file is a workaround for DevSpace v6.3.20 which requires a Dockerfile in the workspace root
+# The actual Dockerfiles for each service are in:
+# - ../devspace-fixture-frontend/Dockerfile
+# - ../devspace-fixture-gateway/Dockerfile  
+# - ../devspace-fixture-backend/Dockerfile
+FROM scratch
+CMD ["echo", "This placeholder Dockerfile should not be used - see devspace.yaml images configuration"]

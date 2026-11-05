@@ -118,6 +118,7 @@ const EXTERNAL_BLOCKER_PATTERNS: readonly BlockerPattern[] = [
       /Service Unavailable/i,
       /\b503\b/,
       /Requested model '.*' is not available/i,
+      /404.*page not found/i,
     ],
   },
   {

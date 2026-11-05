@@ -72,7 +72,7 @@ process.on("SIGTERM", () => {
 });
 
 console.log(
-  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId}, workerMode=${config.workerMode}, trackerProvider=${tracker.provider}, extensions=${projectExecution.extensionsDir}, environmentProvider=${projectExecution.runtime.environmentProvider.id})`,
+  `Piphony orchestrator watch starting (interval=${config.pollIntervalMs}ms, concurrency=${config.maxConcurrentWorkers}, instance=${config.instanceId}, workerMode=${config.workerMode}, trackerProvider=${tracker.provider}, extensions=${projectExecution.extensionsDir}, runtimePlatformProvider=${projectExecution.runtime.runtimePlatformProvider.id})`,
 );
 
 for (;;) {

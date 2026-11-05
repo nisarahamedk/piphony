@@ -451,7 +451,7 @@ A fresh per-attempt dev environment.
 Fields may include:
 - `runtimeId`
 - `provider`
-- `workspacePath`
+- `worktreePath`
 - `serviceEndpoints`
 - `status`
 
