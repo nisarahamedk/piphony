@@ -9,9 +9,11 @@ Canonical repo-touching smoke pattern:
 5. Clean up only the processes and temp paths created by the smoke itself.
 
 Use:
-- `src/fixtures/project.ts` for temp clone + onboarding
+- `src/fixtures/project.ts` for temp clone + onboarding of single-repo onboarded smoke fixtures
+- `src/fixtures/devspace-fixture.ts` for the multi-repo DevSpace fixture temp root
 - `src/smoke/harness.ts` for shared control-plane web/stack process startup and readiness checks
 - `npm run smoke:stack` as the canonical final smoke: provision the real OpenClawsseum runtime stack in a temp onboarded repo, run the implementation agent inside it, and tear it down (requires Docker). It must reuse the same project workflow/execution bootstrap as production surfaces like `dev:stack` and `orchestrator:watch`.
+- `npm run smoke:devspace-local` for the standalone manual/live DevSpace proving-ground smoke against the multi-repo fixture workspace on Minikube (with explicit kind opt-in); it is intentionally not part of `smoke:all` or `validate:main` in Slice 0.
 - `npm run smoke:extension-stack` for automated browser-extension coverage on top of the control-plane stack; it is part of the live smoke suite because it exercises the real extension + Chief of Staff flow.
 - `npm run smoke:tracker-live:linear` / `npm run smoke:tracker-live:jira` for opt-in live external tracker checks when env is configured
 - `docs/PRODUCTION_NORTH_STAR.md` as the source-of-truth architectural rule
