@@ -100,8 +100,12 @@ try {
     throw new Error(`Expected LOCAL-101 to reach human_review, got ${issue?.state ?? "missing"}`);
   }
   const events = await result.logger.readEvents();
-  if (!events.some((event) => event.event === "extension.lifecycle.prepare.completed")) {
-    throw new Error("Expected extension prepare to complete");
+  // Check for workspace lifecycle events (RuntimePlatformProvider)
+  const hasPrepareCompleted = events.some((event) => 
+    event.event === "workspace.lifecycle.prepare.completed"
+  );
+  if (!hasPrepareCompleted) {
+    throw new Error("Expected workspace prepare to complete");
   }
   if (!events.some((event) => event.event === "execution.target.ready")) {
     throw new Error("Expected execution target event");
@@ -109,8 +113,12 @@ try {
   if (!events.some((event) => event.event === "tracker.transition" && event.data?.state === "human_review")) {
     throw new Error("Expected issue to transition to human_review");
   }
-  if (!events.some((event) => event.event === "extension.lifecycle.teardown.completed")) {
-    throw new Error("Expected extension teardown to complete");
+  // Check for teardown completion
+  const hasTeardownCompleted = events.some((event) => 
+    event.event === "workspace.lifecycle.teardown.completed"
+  );
+  if (!hasTeardownCompleted) {
+    throw new Error("Expected workspace teardown to complete");
   }
 
   console.log(JSON.stringify({

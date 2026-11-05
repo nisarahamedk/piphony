@@ -23,8 +23,8 @@ export const DEFAULT_PROGRESS: ProgressSections = {
   importantFiles: [],
 };
 
-export function progressFilePath(workspacePath: string): string {
-  return join(workspacePath, ".symphony", "PROGRESS.md");
+export function progressFilePath(worktreePath: string): string {
+  return join(worktreePath, ".symphony", "PROGRESS.md");
 }
 
 export function renderProgress(sections: ProgressSections): string {
@@ -32,20 +32,20 @@ export function renderProgress(sections: ProgressSections): string {
   return `# Symphony Progress\n\n## Issue / Branch Context\n${sections.issueContext}\n\n## Completed Work\n${bullet(sections.completedWork)}\n\n## Current Plan\n${bullet(sections.currentPlan)}\n\n## Latest Validation Results\n${bullet(sections.latestValidation)}\n\n## Current Blocker\n${sections.currentBlocker}\n\n## Next Best Step\n${sections.nextBestStep}\n\n## Important Files\n${bullet(sections.importantFiles)}\n`;
 }
 
-export async function ensureProgressFile(workspacePath: string, sections: ProgressSections = DEFAULT_PROGRESS): Promise<string> {
-  const path = progressFilePath(workspacePath);
+export async function ensureProgressFile(worktreePath: string, sections: ProgressSections = DEFAULT_PROGRESS): Promise<string> {
+  const path = progressFilePath(worktreePath);
   await ensureDir(dirname(path));
   await writeFile(path, renderProgress(sections), "utf8");
   return path;
 }
 
-export async function readProgressFile(workspacePath: string): Promise<string | undefined> {
+export async function readProgressFile(worktreePath: string): Promise<string | undefined> {
   try {
-    return await readFile(progressFilePath(workspacePath), "utf8");
+    return await readFile(progressFilePath(worktreePath), "utf8");
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return undefined;
     }
-    throw new Error(`Failed to read progress file ${progressFilePath(workspacePath)}: ${errorMessage(error)}`);
+    throw new Error(`Failed to read progress file ${progressFilePath(worktreePath)}: ${errorMessage(error)}`);
   }
 }

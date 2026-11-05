@@ -2,12 +2,12 @@ import { join } from "node:path";
 import type { ActiveRunRegistry } from "./active-run-registry.js";
 import { errorMessage, errorStack } from "./errors.js";
 import type { RunLogger } from "../observability/logger.js";
-import type { RunRecord, RunSummaryRecord, RunWorkerResult, WorkItem } from "./types.js";
+import type { RunRecord, RunSummaryRecord, RunWorkerResult, WorkItem, ExecutionTarget } from "./types.js";
 import { nowIso } from "./utils.js";
 import type { RunWorker } from "./orchestrator.js";
 import type { ProjectExecutionContext } from "../project/execution.js";
-import { prepareProjectEnvironment, teardownProjectEnvironment } from "../project/execution.js";
-import type { PreparedEnvironment } from "../extensions/types.js";
+import type { RepoAttachmentIdentity, RepoAttachment } from "../extensions/types.js";
+import type { WorkspaceHandle, AttachmentHandle } from "./workspace-coordinator.js";
 
 export interface ExecuteOrchestratorRunOptions {
   workItem: WorkItem;
@@ -15,13 +15,33 @@ export interface ExecuteOrchestratorRunOptions {
   logger: RunLogger;
   worker: RunWorker;
   projectExecution?: ProjectExecutionContext;
-  repoRoot?: string;
+  /** Pre-prepared workspace handle from coordinator. Required when projectExecution is present. */
+  workspaceHandle?: WorkspaceHandle;
   activeRunRegistry?: ActiveRunRegistry;
   heartbeat?: (details?: Record<string, unknown>) => Promise<void>;
 }
 
+/**
+ * Execute a single orchestrator run.
+ *
+ * Responsibilities:
+ * - Attach the repo to the pre-prepared workspace (via coordinator handle)
+ * - Execute the worker
+ * - Detach the repo from the workspace
+ *
+ * Workspace prepare/teardown is managed by the orchestrator layer, not here.
+ * This function only handles attach/execute/detach within an already-open workspace.
+ */
 export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOptions): Promise<RunWorkerResult> {
-  const { workItem, run, logger, worker, projectExecution, activeRunRegistry, heartbeat } = options;
+  const { workItem, run, logger, worker, projectExecution, workspaceHandle, activeRunRegistry, heartbeat } = options;
+
+  // Validate: if projectExecution is present, workspaceHandle must also be present
+  if (projectExecution !== undefined && workspaceHandle === undefined) {
+    throw new Error(
+      "Workspace handle is required when projectExecution is configured. " +
+      "Orchestrator should prepare workspace before executing runs.",
+    );
+  }
 
   await logger.emit("run.created", {
     identifier: workItem.identifier,
@@ -30,43 +50,59 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
   });
   await heartbeat?.({ phase: "created" });
 
-  let preparedEnvironment: PreparedEnvironment | undefined;
-  let prepareAttempted = false;
-  let prepareSucceeded = false;
-  let thrownError: unknown;
+  // Attachment handle for cleanup
+  let attachmentHandle: AttachmentHandle | undefined;
+  let executionTarget: ExecutionTarget | undefined;
 
   try {
-    let executionTarget = undefined;
-    if (projectExecution !== undefined) {
-      await logger.emit("extension.lifecycle.prepare.started", {
-        provider: projectExecution.runtime.environmentProvider.id,
-      });
-      prepareAttempted = true;
-      let prepared: Awaited<ReturnType<typeof prepareProjectEnvironment>>;
-      try {
-        prepared = await prepareProjectEnvironment({ context: projectExecution, logger });
-      } catch (prepareError) {
-        // Target resolution failed, but prepareEnv succeeded and returned a real environment.
-        // Capture it for teardown before re-throwing.
-        const errorWithEnv = prepareError as Error & { preparedEnvironment?: PreparedEnvironment };
-        if (errorWithEnv.preparedEnvironment !== undefined) {
-          preparedEnvironment = errorWithEnv.preparedEnvironment;
-          prepareSucceeded = true;
-        }
-        throw prepareError;
+    if (workspaceHandle) {
+      // Use the pre-prepared workspace handle from coordinator
+      const workspaceIdentity = workspaceHandle.workspace.workspace;
+      
+      run.workspaceIdentity = {
+        workspaceId: workspaceIdentity.workspaceId,
+        platformType: workspaceIdentity.platformType,
+        ...(workspaceIdentity.name === undefined ? {} : { name: workspaceIdentity.name }),
+        ...(workspaceIdentity.primaryEndpoint === undefined ? {} : { primaryEndpoint: workspaceIdentity.primaryEndpoint }),
+      };
+
+      // Attach the repo to the workspace
+      const attachOptions: {
+        repoIdentifier: string;
+        branch?: string;
+        projectRoot: string;
+        logger: RunLogger;
+        workItemId: string;
+      } = {
+        repoIdentifier: workItem.identifier,
+        projectRoot: projectExecution?.projectRoot ?? process.cwd(),
+        logger,
+        workItemId: workItem.externalId,
+      };
+      if (workItem.branchName !== undefined) {
+        attachOptions.branch = workItem.branchName;
       }
-      prepareSucceeded = true;
-      preparedEnvironment = prepared.preparedEnvironment;
-      executionTarget = prepared.executionTarget;
-      run.executionTarget = executionTarget.name;
+      attachmentHandle = await workspaceHandle.attach(attachOptions);
+
+      const attachment = attachmentHandle.attachment;
+      
+      run.attachmentIdentity = {
+        attachmentId: attachmentHandle.identity.attachmentId,
+        repoIdentifier: attachmentHandle.identity.repoIdentifier,
+        workspaceId: attachmentHandle.identity.workspaceId,
+        ...(attachmentHandle.identity.branch === undefined ? {} : { branch: attachmentHandle.identity.branch }),
+      };
+
+      // Use execution targets from attachment
+      executionTarget = attachment.defaultExecutionTarget
+        ? attachment.executionTargets[attachment.defaultExecutionTarget]
+        : Object.values(attachment.executionTargets)[0];
+      if (executionTarget?.name !== undefined) {
+        run.executionTarget = executionTarget.name;
+      }
       run.updatedAt = nowIso();
       activeRunRegistry?.updateStatus(run.runId, run.status);
       await logger.writeStatus(run);
-      await logger.emit("extension.lifecycle.prepare.completed", {
-        provider: projectExecution.runtime.environmentProvider.id,
-        executionTarget: executionTarget.name,
-        endpoints: preparedEnvironment.endpoints,
-      });
       await heartbeat?.({ phase: "prepare_complete" });
     }
 
@@ -111,7 +147,6 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
     await heartbeat?.({ phase: "completed", summary: result.summary });
     return result;
   } catch (error) {
-    thrownError = error;
     run.status = "failed";
     run.updatedAt = nowIso();
     activeRunRegistry?.updateStatus(run.runId, run.status);
@@ -134,42 +169,17 @@ export async function executeOrchestratorRun(options: ExecuteOrchestratorRunOpti
     await heartbeat?.({ phase: "failed", error: errorMessage(error) });
     throw error;
   } finally {
-    // Always attempt teardown when preparation was attempted, even if it failed.
-    // The environment provider may have created external state (e.g., docker containers)
-    // that needs cleanup regardless of whether prepare succeeded.
-    //
-    // If prepare succeeded, pass the real PreparedEnvironment to teardown.
-    // If prepare failed (threw before returning), we have no choice but to use a fallback
-    // because we don't have the actual environment object - but we still attempt cleanup
-    // in case the provider created partial state.
-    if (projectExecution !== undefined && prepareAttempted) {
-      const environmentToTeardown = prepareSucceeded && preparedEnvironment !== undefined
-        ? preparedEnvironment
-        : {
-            // Fallback: only used when prepare threw before returning
-            executionTargets: {},
-            endpoints: {},
-          };
+    // Detach the attachment - workspace teardown is handled by the coordinator
+    // Note: The coordinator's detach method already emits lifecycle events,
+    // so we don't emit them here to avoid duplication
+    if (workspaceHandle && attachmentHandle) {
+      const { identity } = attachmentHandle;
       try {
-        await logger.emit("extension.lifecycle.teardown.started", {
-          provider: projectExecution.runtime.environmentProvider.id,
-        });
-        await teardownProjectEnvironment({
-          context: projectExecution,
-          preparedEnvironment: environmentToTeardown,
-          logger,
-        });
-        await logger.emit("extension.lifecycle.teardown.completed", {
-          provider: projectExecution.runtime.environmentProvider.id,
-        });
-      } catch (teardownError) {
-        await logger.emit("extension.lifecycle.teardown.failed", {
-          message: errorMessage(teardownError),
-          stack: errorStack(teardownError),
-        });
-        if (thrownError === undefined) {
-          throw teardownError;
-        }
+        await attachmentHandle.detach();
+      } catch (detachError) {
+        // The coordinator's detach method already emitted the failed event,
+        // but we log additional error info here for debugging
+        console.error("[DEBUG] detach failed for:", identity.attachmentId, "error:", detachError);
       }
     }
   }
@@ -195,5 +205,7 @@ function buildRunSummaryRecord(input: {
     ...(input.transcriptPath === undefined ? {} : { transcriptPath: input.transcriptPath }),
     ...(input.sessionFile === undefined ? {} : { sessionFile: input.sessionFile }),
     ...(input.usedModel === undefined ? {} : { usedModel: input.usedModel }),
+    ...(input.run.workspaceIdentity === undefined ? {} : { workspaceIdentity: input.run.workspaceIdentity }),
+    ...(input.run.attachmentIdentity === undefined ? {} : { attachmentIdentity: input.run.attachmentIdentity }),
   };
 }

@@ -30,7 +30,8 @@ describe("project execution bootstrap", () => {
 
     const execution = loadOnboardedProjectExecution(projectRoot);
     expect(execution.projectRoot).toBe(projectRoot);
-    expect(execution.runtime.environmentProvider.id).toBe("repo/docker-compose");
+    // Now using RuntimePlatformProvider contract instead of legacy EnvironmentProvider
+    expect(execution.runtime.runtimePlatformProvider!.id).toBe("repo/docker-compose");
     expect(execution.runtime.trackerProvider.provider).toBe("jira");
 
     await rm(projectRoot, { recursive: true, force: true });
@@ -44,17 +45,34 @@ describe("project execution bootstrap", () => {
 
     await mkdir(userExtensionsDir, { recursive: true });
     await writeFile(join(userExtensionsDir, "environment.ts"), `export default function (piphony) {
-  piphony.environments.provide({
+  piphony.runtimePlatforms.provide({
     id: "user/host",
-    async prepareEnv(ctx) {
+    platformType: "host",
+    async prepareWorkspace(ctx) {
       return {
+        workspace: {
+          workspaceId: ctx.projectRoot,
+          platformType: "host",
+          name: "Host: " + ctx.projectRoot,
+        },
+      };
+    },
+    async tearDownWorkspace() {},
+    async attachRepo(ctx) {
+      return {
+        attachment: {
+          attachmentId: "host-" + ctx.repoIdentifier,
+          repoIdentifier: ctx.repoIdentifier,
+          workspaceId: ctx.projectRoot,
+          branch: ctx.branch,
+        },
         executionTargets: {
           host: ctx.helpers.createHostExecutionTarget({ projectRoot: ctx.projectRoot }),
         },
         defaultExecutionTarget: "host",
       };
     },
-    async tearDownEnv() {},
+    async detachRepo() {},
   });
 }
 `, "utf8");
@@ -74,7 +92,8 @@ describe("project execution bootstrap", () => {
       expect(isProjectOnboarded(projectRoot)).toBe(true);
       const execution = loadOnboardedProjectExecution(projectRoot);
       expect(execution.projectRoot).toBe(projectRoot);
-      expect(execution.runtime.environmentProvider.id).toBe("user/host");
+      // Now using RuntimePlatformProvider contract instead of legacy EnvironmentProvider
+      expect(execution.runtime.runtimePlatformProvider!.id).toBe("user/host");
       expect(execution.runtime.trackerProvider.provider).toBe("local");
     } finally {
       if (originalHome === undefined) {

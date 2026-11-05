@@ -116,7 +116,7 @@ export async function startLocalPiphonyStack(options: LocalPiphonyStackOptions =
   return {
     repoRoot: projectExecution.projectRoot,
     extensionsPath: projectExecution.extensionsDir,
-    executionTarget: projectExecution.runtime.environmentProvider.id,
+    executionTarget: projectExecution.runtime.runtimePlatformProvider.id,
     trackerDir: config.trackerDir,
     runsRootDir: config.runsRootDir,
     sessionRootDir: config.sessionRootDir,

@@ -33,6 +33,6 @@ describe("git helpers", () => {
       prState: "open",
     });
     expect(prepared.reusedExistingBranch).toBe(true);
-    expect(await readProgressFile(prepared.workspacePath)).toContain("Symphony Progress");
+    expect(await readProgressFile(prepared.worktreePath)).toContain("Symphony Progress");
   });
 });

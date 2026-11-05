@@ -237,17 +237,32 @@ async function createWorkflowProject(trackerProvider: "local" | "linear" | "jira
   const projectRoot = await mkdtemp(join(tmpdir(), "piphony-tracker-runtime-project-"));
   await mkdir(join(projectRoot, ".piphony", "extensions"), { recursive: true });
   await writeFile(join(projectRoot, ".piphony", "extensions", "environment.ts"), `export default function (piphony) {
-  piphony.environments.provide({
+  piphony.runtimePlatforms.provide({
     id: "repo/host",
-    async prepareEnv(ctx) {
+    platformType: "host",
+    async prepareWorkspace(ctx) {
       return {
+        workspace: {
+          workspaceId: ctx.projectRoot,
+          platformType: "host",
+        },
+      };
+    },
+    async tearDownWorkspace() {},
+    async attachRepo(ctx) {
+      return {
+        attachment: {
+          attachmentId: "host-" + ctx.repoIdentifier,
+          repoIdentifier: ctx.repoIdentifier,
+          workspaceId: ctx.projectRoot,
+        },
         executionTargets: {
           host: ctx.helpers.createHostExecutionTarget({ projectRoot: ctx.projectRoot }),
         },
         defaultExecutionTarget: "host",
       };
     },
-    async tearDownEnv() {},
+    async detachRepo() {},
   });
 }
 `, "utf8");

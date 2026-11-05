@@ -123,6 +123,20 @@ export interface RunRecord {
   attemptNumber: number;
   startedAt: string;
   updatedAt: string;
+  /** Workspace identity context (from runtime platform provider) */
+  workspaceIdentity?: {
+    workspaceId: string;
+    platformType: string;
+    name?: string;
+    primaryEndpoint?: string;
+  };
+  /** Attachment identity context (from runtime platform provider) */
+  attachmentIdentity?: {
+    attachmentId: string;
+    repoIdentifier: string;
+    workspaceId: string;
+    branch?: string;
+  };
 }
 
 export interface RunSummaryRecord {
@@ -136,6 +150,10 @@ export interface RunSummaryRecord {
   transcriptPath?: string;
   sessionFile?: string;
   usedModel?: string;
+  /** Workspace identity context (from runtime platform provider) */
+  workspaceIdentity?: RunRecord["workspaceIdentity"];
+  /** Attachment identity context (from runtime platform provider) */
+  attachmentIdentity?: RunRecord["attachmentIdentity"];
 }
 
 export interface RunWorkerResult {
@@ -153,7 +171,7 @@ export interface EventRecord {
 
 export interface WorktreePreparationResult {
   branchName: string;
-  workspacePath: string;
+  worktreePath: string;
   reusedExistingBranch: boolean;
   reason: string;
 }

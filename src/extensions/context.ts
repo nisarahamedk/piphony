@@ -1,28 +1,8 @@
-import type { CanonicalState, ExecutionTarget, TrackerMutation, WorkItem } from "../core/types.js";
+import type { CanonicalState, TrackerMutation, WorkItem } from "../core/types.js";
 import type { RunLogger } from "../observability/logger.js";
 import type { TrackerProviderClient } from "../tracker/types.js";
 import { createExtensionHelpers } from "./api.js";
-import type { LoadedPiphonyExtensions, PreparedEnvironment, TransitionEvent, TransitionHookContext } from "./types.js";
-
-export function resolvePreparedExecutionTarget(prepared: PreparedEnvironment): ExecutionTarget {
-  if (prepared.defaultExecutionTarget !== undefined) {
-    const target = prepared.executionTargets[prepared.defaultExecutionTarget];
-    if (target === undefined) {
-      throw new Error(`Prepared environment declared defaultExecutionTarget '${prepared.defaultExecutionTarget}' but did not return a matching execution target`);
-    }
-    return target;
-  }
-  const entries = Object.entries(prepared.executionTargets);
-  if (entries.length === 0) {
-    throw new Error("Prepared environment did not return any execution targets");
-  }
-  if (entries.length > 1) {
-    throw new Error(
-      `Prepared environment returned multiple execution targets (${entries.map(([name]) => name).join(", ")}) without a defaultExecutionTarget`,
-    );
-  }
-  return entries[0]![1];
-}
+import type { LoadedPiphonyExtensions, TransitionEvent, TransitionHookContext } from "./types.js";
 
 export function createTransitionAwareTracker(input: {
   projectRoot: string;

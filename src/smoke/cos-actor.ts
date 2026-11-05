@@ -73,7 +73,22 @@ async function waitForCompletedTurn(handle: any, completedResponses: () => numbe
     if (status?.state === "error" && combinedStatus !== "") {
       throw new Error(`ChiefOfStaff turn failed: ${combinedStatus}`);
     }
-    if (completedResponses() > previousCount && status.state !== "thinking" && Array.isArray(history) && history.length >= minimumMessages) {
+    const hasNewResponse = completedResponses() > previousCount;
+    if (hasNewResponse) {
+      // Response completed, now wait for status/history to catch up (they may lag behind the done event)
+      const statusSettled = status.state !== "thinking";
+      const historyReady = Array.isArray(history) && history.length >= minimumMessages;
+      if (statusSettled && historyReady) {
+        return;
+      }
+      // If we have a new response but status/history haven't caught up yet, give them a moment
+      // This handles the race where done=true is broadcast before status update to idle
+      if (attempt < 178) {
+        await sleep(250);
+        continue;
+      }
+    }
+    if (status.state !== "thinking" && Array.isArray(history) && history.length >= minimumMessages) {
       return;
     }
     await sleep(250);

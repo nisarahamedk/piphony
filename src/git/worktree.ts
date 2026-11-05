@@ -53,19 +53,19 @@ export async function prepareWorktree(input: {
   const branchName = sanitizeBranchName(input.issueIdentifier);
   const result = await validateBranchReuse(input);
   await ensureDir(input.runtimeRoot);
-  const workspacePath = join(input.runtimeRoot, branchName.toLowerCase());
+  const worktreePath = join(input.runtimeRoot, branchName.toLowerCase());
 
   try {
-    await execFileAsync("git", ["worktree", "remove", workspacePath, "--force"], { cwd: input.repoPath });
+    await execFileAsync("git", ["worktree", "remove", worktreePath, "--force"], { cwd: input.repoPath });
   } catch {
     // noop
   }
 
   if (result.reuse) {
-    await execFileAsync("git", ["worktree", "add", workspacePath, branchName], { cwd: input.repoPath });
+    await execFileAsync("git", ["worktree", "add", worktreePath, branchName], { cwd: input.repoPath });
     return {
       branchName,
-      workspacePath,
+      worktreePath,
       reusedExistingBranch: true,
       reason: result.reason,
     };
@@ -74,10 +74,10 @@ export async function prepareWorktree(input: {
   if (await branchExists(input.repoPath, branchName)) {
     await execFileAsync("git", ["branch", "-D", branchName], { cwd: input.repoPath });
   }
-  await execFileAsync("git", ["worktree", "add", "-b", branchName, workspacePath, "HEAD"], { cwd: input.repoPath });
+  await execFileAsync("git", ["worktree", "add", "-b", branchName, worktreePath, "HEAD"], { cwd: input.repoPath });
   return {
     branchName,
-    workspacePath,
+    worktreePath,
     reusedExistingBranch: false,
     reason: result.reason,
   };
